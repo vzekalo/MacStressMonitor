@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -338,58 +338,58 @@ class MetricsCollector:
             if gpu_t: self.data["gpu_temp"] = round(max(gpu_t), 1)
 
     def _powermetrics_loop(self):
-        """Run powermetrics with admin privileges (piping password via sudo -S)."""
-        try:
-            samplers = "smc,cpu_power,gpu_power" if self.sys_info["arch"] == "intel" else "cpu_power,gpu_power"
+        """Run powermetrics with admin privileges.
+        Uses osascript 'do shell script ... with administrator privileges'
+        which is the correct macOS way to run as root without a TTY.
+        """
+        samplers = "smc,cpu_power,gpu_power" if self.sys_info["arch"] == "intel" else "cpu_power,gpu_power"
+        pm_cmd = f"powermetrics --samplers {samplers} -i 1000 -n 1"
 
-            def _stream_pm_simple(cmd_prefix=[]):
-                """Stream powermetrics output continuously (no stdin needed)."""
-                self._pm_proc = subprocess.Popen(
-                    cmd_prefix + ["powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                )
-                buf = []
-                for line in self._pm_proc.stdout:
-                    if self._stop.is_set(): break
-                    buf.append(line)
-                    if line.strip() == "" and len(buf) > 5:
-                        self._parse_pm("".join(buf)); buf = []
-
+        def _run_once_as_root(pw=None):
+            """Run one powermetrics sample as root. Returns output string or None."""
             # Strategy 1: Already root
             if os.geteuid() == 0:
-                _stream_pm_simple()
-                return
+                r = subprocess.run(["powermetrics", "--samplers", samplers, "-i", "1000", "-n", "1"],
+                                   capture_output=True, text=True, timeout=15)
+                return r.stdout if r.returncode == 0 else None
 
-            # Strategy 2: sudo -n works (no password needed — cached or NOPASSWD)
-            try:
-                test = subprocess.run(["sudo", "-n", "powermetrics", "--samplers", samplers, "-i", "1000", "-n", "1"],
-                                      capture_output=True, timeout=10)
-                if test.returncode == 0:
-                    _stream_pm_simple(["sudo", "-n"])
-                    return
-            except Exception:
-                pass
+            # Strategy 2: sudo -n (no password needed)
+            r = subprocess.run(["sudo", "-n", "powermetrics", "--samplers", samplers, "-i", "1000", "-n", "1"],
+                               capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                return r.stdout
 
-            # Strategy 3: Use password from pre-elevation (piped via sudo -S)
-            pw = getattr(self, '_sudo_pw', None)
+            # Strategy 3: osascript with password (the macOS-native way)
             if pw:
-                self._pm_proc = subprocess.Popen(
-                    ["sudo", "-S", "powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                )
-                self._pm_proc.stdin.write(pw + "\n")
-                self._pm_proc.stdin.flush()
-                self._sudo_pw = None  # Clear password from memory
-                buf = []
-                for line in self._pm_proc.stdout:
-                    if self._stop.is_set(): break
-                    buf.append(line)
-                    if line.strip() == "" and len(buf) > 5:
-                        self._parse_pm("".join(buf)); buf = []
-                return
+                safe_pw = pw.replace('"', '\\"').replace("'", "\\'")
+                script = f'do shell script "{pm_cmd}" with administrator privileges password "{safe_pw}"'
+                r = subprocess.run(["osascript", "-e", script],
+                                   capture_output=True, text=True, timeout=15)
+                if r.returncode == 0:
+                    return r.stdout
+                # Wrong password or other error
+                print(f"  ❌ powermetrics via osascript failed: {r.stderr.strip()}")
 
-        except Exception as e:
-            print(f"  ⚠️  powermetrics: {e}")
+            return None
+
+        pw = getattr(self, '_sudo_pw', None)
+        self._sudo_pw = None  # Clear from memory after reading
+
+        while not self._stop.is_set():
+            try:
+                out = _run_once_as_root(pw)
+                if out:
+                    self._parse_pm(out)
+                    pw = None  # Only need password for first auth; osascript caches it
+                else:
+                    # If we got no output and have no password, stop trying
+                    if pw is None and os.geteuid() != 0:
+                        break
+            except Exception as e:
+                print(f"  ⚠️  powermetrics: {e}")
+            self._stop.wait(2.0)
+
+
 
     def _parse_pm(self, block):
         ct = gt = fan = freq = cpu_pw = gpu_pw = None
@@ -493,6 +493,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Helvetica Ne
 .c.tmp::before{background:linear-gradient(90deg,#ff4757,#ff6348)}
 .c.pwr::before{background:linear-gradient(90deg,#ffa502,#e67e00)}
 .c.inf::before{background:linear-gradient(90deg,#2ed573,#26de81)}
+.c.bench::before{background:linear-gradient(90deg,#00d4ff,#0abde3)}
 .ct{font-size:10px;color:#777;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px}
 .cv{font-size:36px;font-weight:700;line-height:1}
 .cs{font-size:12px;color:#555;margin-top:4px}
@@ -542,9 +543,10 @@ pwr:`<div class="c pwr" data-tile="pwr" draggable="true"><div class="ct">Power C
 mem:`<div class="c mem" data-tile="mem" draggable="true"><div class="ct">Memory (RAM)</div><div class="cv" id="memV">&mdash;</div><div class="cs" id="memS"></div><canvas id="memC"></canvas></div>`,
 swp:`<div class="c swp" data-tile="swp" draggable="true"><div class="ct">Swap (SSD &#8594; RAM)</div><div class="cv" id="swpV" style="font-size:26px">&mdash;</div><div class="cs" id="swpS"></div><div class="sbar"><div class="sfill" id="swpB"></div></div></div>`,
 dsk:`<div class="c dsk" data-tile="dsk" draggable="true"><div class="ct">Disk I/O</div><div class="cv" id="dskV" style="font-size:26px">&mdash;</div><div class="cs" id="dskS"></div><canvas id="dskC"></canvas></div>`,
-inf:`<div class="c inf" data-tile="inf" draggable="true"><div class="ct">System Info</div><div id="info"></div></div>`
+bench:`<div class="c bench" data-tile="bench" draggable="true"><div class="ct">Disk Benchmark</div><div style="display:flex;flex-direction:column;justify-content:center;height:100%;"><button class="b bench" onclick="diskBench()" id="benchBtn" style="width:100%;margin-bottom:10px">&#128300; RUN TEST</button><div id="benchRes" style="font-family:'SF Mono',monospace;font-size:11px;color:#aaa;line-height:1.4"></div></div></div>`,
+inf:`<div class="c inf" data-tile="inf" draggable="true"><div class="ct">System Info</div><div id="info" style="font-size:12px;color:#aaa;line-height:1.6"></div><div id="updStatus" style="margin-top:8px;border-top:1px solid #333;padding-top:8px"><button class="b" style="background:#333;font-size:11px;padding:4px 8px;width:100%" onclick="checkUpd()">&#128260; Check for Updates</button></div></div>`
 };
-const DEF_ORDER=['cpu','tmp','pwr','mem','swp','dsk','inf'];
+const DEF_ORDER=['cpu','tmp','pwr','mem','swp','dsk','bench','inf'];
 function getTileOrder(){try{let o=JSON.parse(localStorage.getItem('ms_tile_order'));if(o&&o.length===DEF_ORDER.length)return o;}catch(e){}return DEF_ORDER;}
 function saveTileOrder(){let tiles=[...document.querySelectorAll('[data-tile]')].map(t=>t.dataset.tile);localStorage.setItem('ms_tile_order',JSON.stringify(tiles));}
 function initBanner(){
@@ -625,7 +627,7 @@ let allBtn=running
 let timer='<div class="timer"><label>Duration:</label><select id="dur"><option value="60">1 min</option><option value="300">5 min</option><option value="600" selected>10 min</option><option value="1800">30 min</option><option value="3600">1 hour</option><option value="0">&#8734; No limit</option></select></div>';
 let cd='<div class="cd'+(endT>0?' vis':'')+'" id="cdBox">&#9200; <span id="cdT"></span></div>';
 let bench='<button class="b bench" onclick="diskBench()" id="benchBtn">&#128300; BENCHMARK</button>';
-$('ctrl').innerHTML=tBtns+timer+allBtn+bench+cd;
+$('ctrl').innerHTML=tBtns+timer+allBtn+cd;
 ctrlInit=true;
 }
 function uC(a){
@@ -658,22 +660,46 @@ fetch('/api/toggle_all?on='+on+'&dur='+dur,{method:'POST'});
 if(on==1&&parseInt(dur)>0){endT=Date.now()+parseInt(dur)*1000;if(cdi)clearInterval(cdi);cdi=setInterval(updCD,200);updCD();}
 else if(on==0){endT=0;if(cdi){clearInterval(cdi);cdi=null;}let cb=$('cdBox');if(cb)cb.className='cd';}}
 
+function checkUpd(){
+ let b=document.querySelector('#updStatus button');
+ b.disabled=true;b.textContent='Checking...';
+ fetch('/api/check_update').then(r=>r.json()).then(d=>{
+  let s=document.getElementById('updStatus');
+  if(d.has_update){
+   s.innerHTML='<div style="color:#2ed573;margin-bottom:5px">🆕 New version: '+d.latest+'</div><a href="'+d.url+'" target="_blank" class="b go" style="display:block;text-align:center;text-decoration:none;font-size:11px;padding:4px">Download</a>';
+  } else {
+   b.textContent='✅ Up to date (v'+d.custom_ver+')';
+   b.style.background='rgba(46,213,115,0.1)';
+   b.style.color='#2ed573';
+   setTimeout(()=>{b.disabled=false;b.textContent='🔄 Check for Updates';b.style.background='#333';b.style.color='#fff'}, 5000);
+  }
+ });
+}
+
 function diskBench(){
 let bb=document.getElementById('benchBtn');if(!bb)return;
+let res=document.getElementById('benchRes');
 bb.disabled=true;bb.textContent='⏳ Running...';
+if(res)res.innerHTML='';
 fetch('/api/disk_bench',{method:'POST'}).then(()=>{
  let pi=setInterval(()=>{
   fetch('/api/disk_bench_result').then(r=>r.json()).then(d=>{
    if(!d.running&&d.results.length>0){
-    clearInterval(pi);bb.disabled=false;bb.textContent='🔬 BENCHMARK';
-    let h='<div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:center;justify-content:center" onclick="this.remove()"><div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;min-width:400px" onclick="event.stopPropagation()"><h3 style="margin:0 0 16px;color:#00d4ff">💽 Disk Benchmark Results</h3><table style="width:100%;border-collapse:collapse">';
-    h+='<tr style="color:#888"><td>Test</td><td style="text-align:right">Write MB/s</td><td style="text-align:right">Read MB/s</td></tr>';
-    d.results.forEach(r=>{h+='<tr style="border-top:1px solid #333"><td style="color:#eee;padding:6px 0">'+r.label+'</td><td style="text-align:right;color:#ff6b6b;padding:6px 0">'+r.write_mb+'</td><td style="text-align:right;color:#48dbfb;padding:6px 0">'+r.read_mb+'</td></tr>';});
-    h+='</table><p style="color:#666;font-size:12px;margin:12px 0 0">Click outside to close</p></div></div>';
-    document.body.insertAdjacentHTML('beforeend',h);
-   } else if(d.running){bb.textContent='⏳ '+d.results.length+'/4...';}
+    clearInterval(pi);bb.disabled=false;bb.textContent='Done';
+    setTimeout(()=>{bb.textContent='🔄 RERUN'}, 2000);
+    let t='<table style="width:100%"><tr><td style="color:#666">Test</td><td style="text-align:right">WR</td><td style="text-align:right">RD</td></tr>';
+    d.results.forEach(r=>{t+='<tr><td style="color:#ddd">'+r.label.replace('Seq ','').replace('Rnd ','R ')+'</td><td style="text-align:right;color:#ff6b6b">'+r.write_mb+'</td><td style="text-align:right;color:#48dbfb">'+r.read_mb+'</td></tr>';});
+    t+='</table>';
+    if(res)res.innerHTML=t;
+   } else if(d.running){
+     bb.textContent='⏳ '+d.results.length+'/4';
+     if(d.results.length>0 && res){
+        let last=d.results[d.results.length-1];
+        res.innerHTML='Current: '+last.label+'<br>W: '+last.write_mb+' | R: '+last.read_mb;
+     }
+   }
   });
- },1500);
+ },1000);
 });}
 
 function sse(){let es=new EventSource('/events');
@@ -812,6 +838,22 @@ class Handler(BaseHTTPRequestHandler):
                 "running": _disk_bench_running,
                 "results": _disk_bench_results
             }).encode())
+        elif self.path == "/api/check_update":
+            latest = check_for_updates(silent=True)
+            has_update = False
+            if latest:
+                 # Helper to parse version
+                 def vt(v): return tuple(int(x) for x in v.split(".")) if "." in v else (0,)
+                 if vt(latest) > vt(VERSION):
+                     has_update = True
+            
+            self._ok("application/json", json.dumps({
+                "current": VERSION,
+                "latest": latest,
+                "has_update": has_update,
+                "url": f"https://github.com/{GITHUB_REPO}/releases/latest",
+                "custom_ver": VERSION
+            }).encode())
         else:
             self.send_error(404)
 
@@ -888,6 +930,14 @@ def run_native_app(port):
 
             menu.addItem_(NSMenuItem.separatorItem())
 
+            upd_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Check for Updates...", "checkUpdate:", "")
+            upd_item.setTarget_(self)
+            menu.addItem_(upd_item)
+
+            menu.addItem_(NSMenuItem.separatorItem())
+
+
+
             start_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Start All Stress Tests", "startAll:", "s")
             start_item.setTarget_(self)
             menu.addItem_(start_item)
@@ -912,6 +962,29 @@ def run_native_app(port):
 
             # Auto-open dashboard
             self.openDashboard_(None)
+
+        def checkUpdate_(self, sender):
+            """Trigger update check and show alert."""
+            latest = check_for_updates(silent=True)
+            msg = "You are using the latest version."
+            info = f"MacStress v{VERSION}"
+            if latest and latest != VERSION:
+                # Simple check: is latest > VERSION?
+                def vt(v): return tuple(int(x) for x in v.split(".")) if "." in v else (0,)
+                if vt(latest) > vt(VERSION):
+                    msg = f"New version available: v{latest}"
+                    info = f"Current: v{VERSION}. Visit GitHub to download."
+            
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_(msg)
+            alert.setInformativeText_(info)
+            alert.addButtonWithTitle_("OK")
+            if latest and latest != VERSION:
+                alert.addButtonWithTitle_("Open GitHub")
+            
+            resp = alert.runModal()
+            if latest and latest != VERSION and resp == 1001: # Second button
+                 subprocess.run(["open", f"https://github.com/{GITHUB_REPO}/releases/latest"])
 
         def updateMenuBar_(self, timer):
             """Update menu bar with live CPU / RAM / Temp / Power stats."""
@@ -1036,10 +1109,12 @@ def _run_disk_benchmark():
     _disk_bench_results = []
     bf = "/tmp/macstress_bench"
     passes = [
+        # (label, block_size_bytes, count, filepath, total_mb)
+        # Industry standard: 512MB seq, 64MB random — matches AmorphousDiskMark
         ("Seq 1MB",   "1048576",  512,  f"{bf}_seq1m",   512),
         ("Seq 256K",  "262144",   1024, f"{bf}_seq256k", 256),
         ("Seq 64K",   "65536",    2048, f"{bf}_seq64k",  128),
-        ("Rnd 4K",    "4096",     8192, f"{bf}_rnd4k",   32),
+        ("Rnd 4K",    "4096",     16384, f"{bf}_rnd4k",  64),
     ]
     for label, bs, count, fpath, total_mb in passes:
         r = _dd_bench(label, bs, count, fpath, total_mb)
