@@ -1,6 +1,8 @@
 #!/bin/bash
 # MacStress Lite — Pure Bash, Zero Dependencies
 # Works on any Mac from 2010+ (bash 3.2 compatible)
+VERSION="1.3.0"
+GITHUB_REPO="vzekalo/MacStressMonitor"
 
 R=$'\033[0;31m'
 G=$'\033[0;32m'
@@ -259,6 +261,55 @@ bar() {
     printf "[%s]" "$b"
 }
 
+check_updates() {
+    printf "\n  ${Y}Перевірка оновлень...${N}\n"
+    latest=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/' | sed 's/^v//')
+    if [ -z "$latest" ]; then
+        printf "  ${R}Не вдалося перевірити${N}\n"
+    elif [ "$latest" != "$VERSION" ]; then
+        printf "  ${G}🆕 Нова версія: v%s (поточна: v%s)${N}\n" "$latest" "$VERSION"
+        printf "  ${C}📥 https://github.com/%s/releases/latest${N}\n" "$GITHUB_REPO"
+    else
+        printf "  ${G}✅ Актуальна версія: v%s${N}\n" "$VERSION"
+    fi
+    sleep 2
+}
+
+install_app() {
+    app_dir="$HOME/Applications"
+    mkdir -p "$app_dir"
+    app_path="$app_dir/MacStress Lite.app"
+    macos_dir="$app_path/Contents/MacOS"
+    mkdir -p "$macos_dir"
+    script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    cat > "$macos_dir/MacStressLite" <<LAUNCHER
+#!/bin/bash
+osascript -e 'tell app "Terminal" to do script "bash \\"${script_path}\\""' -e 'tell app "Terminal" to activate'
+LAUNCHER
+    chmod 755 "$macos_dir/MacStressLite"
+    cat > "$app_path/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>MacStressLite</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.macstress.lite</string>
+    <key>CFBundleName</key>
+    <string>MacStress Lite</string>
+    <key>CFBundleVersion</key>
+    <string>${VERSION}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+</dict>
+</plist>
+PLIST
+    printf "\n  ${G}✅ MacStress Lite.app створено в ~/Applications/${N}\n"
+    printf "  ${C}📂 %s${N}\n" "$app_path"
+    sleep 2
+}
+
 disk_io() {
     io=$(iostat -d -c 2 2>/dev/null | tail -1)
     if [ -n "$io" ]; then
@@ -273,7 +324,7 @@ disk_io() {
 # ===== HEADER =============================================
 draw_header() {
     printf "\n"
-    printf "  ${Y}*${N} ${B}MacStress Lite${N}\n"
+    printf "  ${Y}*${N} ${B}MacStress Lite v${VERSION}${N}\n"
     printf "  ${D}================================================${N}\n"
     printf "  ${C}Model${N}  %s\n" "$MODEL"
     printf "  ${C}CPU${N}    %s\n" "$CPU_BRAND"
@@ -281,7 +332,7 @@ draw_header() {
     printf "  ${D}================================================${N}\n"
     printf "  ${B}Controls:${N}\n"
     printf "  ${Y}[1]${N} CPU  ${Y}[2]${N} RAM  ${Y}[3]${N} Disk  ${Y}[4]${N} ALL\n"
-    printf "  ${Y}[5]${N} Disk Bench  ${Y}[x]${N} Stop  ${Y}[q]${N} Quit\n"
+    printf "  ${Y}[5]${N} Bench ${Y}[u]${N} Update ${Y}[i]${N} Install ${Y}[x]${N} Stop ${Y}[q]${N} Quit\n"
     printf "  ${D}================================================${N}\n"
     printf "\n\n\n\n\n\n\n\n\n\n"
     LL=13
@@ -366,6 +417,8 @@ while true; do
         4) s_all 180 ;;
         5) tput cnorm 2>/dev/null; disk_bench; tput civis 2>/dev/null ;;
         x|X) stop_s ;;
+        u|U) tput cnorm 2>/dev/null; check_updates; clear; draw_header; tput civis 2>/dev/null ;;
+        i|I) tput cnorm 2>/dev/null; install_app; clear; draw_header; tput civis 2>/dev/null ;;
         q|Q) exit 0 ;;
     esac
 done

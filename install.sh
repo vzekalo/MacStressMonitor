@@ -163,8 +163,10 @@ fi
 # ══════════════════════════════════════════════════════════
 mkdir -p "$INSTALL_DIR"
 
-info "Downloading MacStress app..."
+info "Downloading MacStress..."
 curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress.py" -o "$APP_FILE"
+curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress_lite.sh" -o "$INSTALL_DIR/macstress_lite.sh" 2>/dev/null
+chmod +x "$INSTALL_DIR/macstress_lite.sh" 2>/dev/null
 
 # Create a launch script for easy re-launch
 cat > "$INSTALL_DIR/launch.sh" << LAUNCH
@@ -172,6 +174,62 @@ cat > "$INSTALL_DIR/launch.sh" << LAUNCH
 exec "$PY3" "$APP_FILE"
 LAUNCH
 chmod +x "$INSTALL_DIR/launch.sh"
+
+# ══════════════════════════════════════════════════════════
+# 5. CREATE APP LAUNCHERS IN ~/Applications
+# ══════════════════════════════════════════════════════════
+info "Creating app launchers..."
+
+APPS_DIR="$HOME/Applications"
+mkdir -p "$APPS_DIR"
+
+# MacStress.app (full version)
+MS_APP="$APPS_DIR/MacStress.app"
+mkdir -p "$MS_APP/Contents/MacOS"
+cat > "$MS_APP/Contents/MacOS/MacStress" << 'MSLAUNCH'
+#!/bin/bash
+osascript -e 'tell app "Terminal" to do script "~/.macstress/launch.sh"' \
+    -e 'tell app "Terminal" to activate'
+MSLAUNCH
+chmod 755 "$MS_APP/Contents/MacOS/MacStress"
+cat > "$MS_APP/Contents/Info.plist" << MSPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>   <string>MacStress</string>
+    <key>CFBundleIdentifier</key>   <string>com.macstress.full</string>
+    <key>CFBundleName</key>         <string>MacStress</string>
+    <key>CFBundlePackageType</key>  <string>APPL</string>
+</dict>
+</plist>
+MSPLIST
+ok "MacStress.app → ~/Applications/"
+
+# MacStress Lite.app
+if [ -f "$INSTALL_DIR/macstress_lite.sh" ]; then
+    ML_APP="$APPS_DIR/MacStress Lite.app"
+    mkdir -p "$ML_APP/Contents/MacOS"
+    cat > "$ML_APP/Contents/MacOS/MacStressLite" << MLLAUNCH
+#!/bin/bash
+osascript -e 'tell app "Terminal" to do script "bash \"$INSTALL_DIR/macstress_lite.sh\""' \\
+    -e 'tell app "Terminal" to activate'
+MLLAUNCH
+    chmod 755 "$ML_APP/Contents/MacOS/MacStressLite"
+    cat > "$ML_APP/Contents/Info.plist" << MLPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>   <string>MacStressLite</string>
+    <key>CFBundleIdentifier</key>   <string>com.macstress.lite</string>
+    <key>CFBundleName</key>         <string>MacStress Lite</string>
+    <key>CFBundlePackageType</key>  <string>APPL</string>
+</dict>
+</plist>
+MLPLIST
+    ok "MacStress Lite.app → ~/Applications/"
+fi
 
 printf "\n"
 printf "  ${G}============================================${N}\n"
@@ -182,6 +240,7 @@ else
 fi
 printf "  ${C}Dashboard:${N} http://localhost:9630\n"
 printf "  ${C}Re-launch:${N} ~/.macstress/launch.sh\n"
+printf "  ${C}Apps:${N}      ~/Applications/MacStress.app\n"
 printf "  ${G}============================================${N}\n"
 printf "\n"
 

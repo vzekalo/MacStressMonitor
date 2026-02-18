@@ -21,6 +21,9 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
+VERSION = "1.3.0"
+GITHUB_REPO = "vzekalo/MacStressMonitor"
+
 # ═══════════════════════════ System Detection ═══════════════════════════
 
 def detect_system():
@@ -335,7 +338,7 @@ class MetricsCollector:
             if gpu_t: self.data["gpu_temp"] = round(max(gpu_t), 1)
 
     def _powermetrics_loop(self):
-        """Run powermetrics with admin privileges (one-time password)."""
+        """Run powermetrics with admin privileges (multiple elevation strategies)."""
         try:
             samplers = "smc,cpu_power,gpu_power" if self.sys_info["arch"] == "intel" else "cpu_power,gpu_power"
             sudoers_rule = "/etc/sudoers.d/macstress_pm"
@@ -353,16 +356,17 @@ class MetricsCollector:
                     if line.strip() == "" and len(buf) > 5:
                         self._parse_pm("".join(buf)); buf = []
 
+            # Strategy 1: Already root
             if os.geteuid() == 0:
                 _stream_pm()
                 return
 
-            # Not root — check if sudoers rule already exists (from previous run)
+            # Strategy 2: Sudoers rule exists from previous run
             if os.path.isfile(sudoers_rule):
                 _stream_pm(["sudo"])
                 return
 
-            # Create sudoers rule via osascript (ONE password prompt)
+            # Strategy 3: Try osascript GUI dialog (modern macOS)
             ascript = (
                 'do shell script '
                 '"echo \'%%admin ALL=(root) NOPASSWD: /usr/bin/powermetrics\' '
@@ -375,16 +379,28 @@ class MetricsCollector:
                     ["osascript", "-e", ascript],
                     capture_output=True, text=True, timeout=120
                 )
-                if proc.returncode != 0:
-                    err = (proc.stderr or "").lower()
-                    if "cancel" in err or "-128" in err:
-                        return  # User cancelled
+                if proc.returncode == 0:
+                    _stream_pm(["sudo"])
                     return
             except Exception:
-                return
+                pass
 
-            # Sudoers rule created — stream with sudo (no more passwords)
-            _stream_pm(["sudo"])
+            # Strategy 4: Terminal sudo -v fallback (works on old macOS 10.8+)
+            # This shows password prompt in the terminal like macstress_lite.sh
+            print("\n  🔑 Для моніторингу температури потрібен sudo")
+            print("  (Введіть пароль адміністратора або натисніть Enter щоб пропустити)\n")
+            try:
+                sv = subprocess.run(
+                    ["sudo", "-v"],
+                    timeout=60
+                )
+                if sv.returncode == 0:
+                    _stream_pm(["sudo"])
+                    return
+            except Exception:
+                pass
+
+            print("  ⚠️  powermetrics: немає доступу sudo — температура недоступна")
         except Exception as e:
             print(f"  ⚠️  powermetrics: {e}")
 
@@ -959,13 +975,118 @@ def run_native_app(port):
     app.run()
 
 
+# ═══════════════════════════ Update Check ═══════════════════════════════
+
+def check_for_updates(silent=False):
+    """Check GitHub for newer version. Returns (has_update, latest_ver) or None."""
+    try:
+        import urllib.request
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(url, headers={"User-Agent": "MacStress"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode())
+            latest = data.get("tag_name", "").lstrip("v")
+            if latest and latest != VERSION:
+                print(f"\n  🆕 Нова версія доступна: v{latest} (поточна: v{VERSION})")
+                print(f"  📥 https://github.com/{GITHUB_REPO}/releases/latest")
+                return True, latest
+            elif not silent:
+                print(f"  ✅ Актуальна версія: v{VERSION}")
+            return False, VERSION
+    except Exception:
+        if not silent:
+            print("  ⚠️  Не вдалося перевірити оновлення")
+        return None, VERSION
+
+
+# ═══════════════════════════ App Launcher ═══════════════════════════════
+
+def create_app_launcher(app_type="full"):
+    """Create .app bundle in ~/Applications for easy launching."""
+    apps_dir = Path.home() / "Applications"
+    apps_dir.mkdir(exist_ok=True)
+
+    if app_type == "full":
+        app_name = "MacStress"
+        # Find the Python that runs this script
+        python_path = sys.executable
+        script_path = os.path.abspath(__file__)
+        launch_cmd = f'exec "{python_path}" "{script_path}" "$@"'
+    else:
+        app_name = "MacStress Lite"
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macstress_lite.sh")
+        launch_cmd = f'exec bash "{script_path}"'
+
+    app_path = apps_dir / f"{app_name}.app"
+    contents = app_path / "Contents"
+    macos = contents / "MacOS"
+    macos.mkdir(parents=True, exist_ok=True)
+
+    # Launcher script
+    launcher = macos / app_name.replace(" ", "")
+    launcher.write_text(f"""#!/bin/bash
+# {app_name} Launcher — auto-generated by MacStress v{VERSION}
+# Opens Terminal with the app running
+
+if [ -x /usr/bin/open ]; then
+    # Open in Terminal.app
+    osascript -e 'tell app "Terminal" to do script "{launch_cmd.replace(chr(34), chr(92)+chr(34))}"' \
+        -e 'tell app "Terminal" to activate'
+else
+    {launch_cmd}
+fi
+""")
+    launcher.chmod(0o755)
+
+    # Info.plist
+    plist = contents / "Info.plist"
+    bundle_id = f"com.macstress.{app_name.lower().replace(' ', '')}"
+    plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>{app_name.replace(' ', '')}</string>
+    <key>CFBundleIdentifier</key>
+    <string>{bundle_id}</string>
+    <key>CFBundleName</key>
+    <string>{app_name}</string>
+    <key>CFBundleVersion</key>
+    <string>{VERSION}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>{VERSION}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+</dict>
+</plist>
+""")
+
+    print(f"  ✅ {app_name}.app створено в ~/Applications/")
+    print(f"  📂 {app_path}")
+    return str(app_path)
+
+
 # ═══════════════════════════ Main ═══════════════════════════════════════
 
 def main():
     global _mc, _sm, _si
 
+    # Handle CLI flags
+    if "--install-app" in sys.argv:
+        create_app_launcher("full")
+        return
+    if "--install-lite-app" in sys.argv:
+        create_app_launcher("lite")
+        return
+    if "--check-update" in sys.argv:
+        check_for_updates()
+        return
+    if "--version" in sys.argv:
+        print(f"MacStress v{VERSION}")
+        return
+
     print("\n" + "="*60)
-    print("  ⚡ MacStress — Native macOS Stress Test + Monitor")
+    print(f"  ⚡ MacStress v{VERSION} — Native macOS Stress Test + Monitor")
     print("="*60)
 
     _si = detect_system()
@@ -976,7 +1097,8 @@ def main():
     print(f"  💾 {_si['ram_gb']} GB  ·  {_si['arch'].upper()}")
     print(f"  💿 {_si['os']}")
 
-    # Power data will be collected via osascript admin elevation\n
+    # Check for updates in background
+    threading.Thread(target=check_for_updates, args=(True,), daemon=True).start()
 
     _mc = MetricsCollector(_si)
     _sm = StressManager(_si)
