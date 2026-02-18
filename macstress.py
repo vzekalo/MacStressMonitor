@@ -335,14 +335,15 @@ class MetricsCollector:
             if gpu_t: self.data["gpu_temp"] = round(max(gpu_t), 1)
 
     def _powermetrics_loop(self):
-        """Run powermetrics with admin privileges."""
+        """Run powermetrics with admin privileges (one-time password)."""
         try:
             samplers = "smc,cpu_power,gpu_power" if self.sys_info["arch"] == "intel" else "cpu_power,gpu_power"
+            sudoers_rule = "/etc/sudoers.d/macstress_pm"
 
-            if os.geteuid() == 0:
-                # Already root — stream directly
+            def _stream_pm(cmd_prefix=[]):
+                """Stream powermetrics output continuously."""
                 self._pm_proc = subprocess.Popen(
-                    ["powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
+                    cmd_prefix + ["powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                 )
                 buf = []
@@ -351,40 +352,39 @@ class MetricsCollector:
                     buf.append(line)
                     if line.strip() == "" and len(buf) > 5:
                         self._parse_pm("".join(buf)); buf = []
-            else:
-                # Not root — loop osascript runs with admin privileges.
-                # Each run collects ~30 seconds of data, then returns stdout.
-                # macOS caches the admin password for a few minutes after first entry.
-                pm_cmd = f"powermetrics --samplers {samplers} -i 2000 -n 15"
-                prompt = "MacStress: доступ адміністратора для моніторингу споживання енергії (powermetrics)"
-                ascript = (
-                    f'do shell script "{pm_cmd}" '
-                    f'with prompt "{prompt}" '
-                    f'with administrator privileges'
+
+            if os.geteuid() == 0:
+                _stream_pm()
+                return
+
+            # Not root — check if sudoers rule already exists (from previous run)
+            if os.path.isfile(sudoers_rule):
+                _stream_pm(["sudo"])
+                return
+
+            # Create sudoers rule via osascript (ONE password prompt)
+            ascript = (
+                'do shell script '
+                '"echo \'%%admin ALL=(root) NOPASSWD: /usr/bin/powermetrics\' '
+                '> /etc/sudoers.d/macstress_pm && chmod 0440 /etc/sudoers.d/macstress_pm" '
+                'with prompt "MacStress: дозвольте моніторинг енергії (1 раз)" '
+                'with administrator privileges'
+            )
+            try:
+                proc = subprocess.run(
+                    ["osascript", "-e", ascript],
+                    capture_output=True, text=True, timeout=120
                 )
-                while not self._stop.is_set():
-                    try:
-                        proc = subprocess.Popen(
-                            ["osascript", "-e", ascript],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                        )
-                        self._pm_proc = proc
-                        stdout, stderr = proc.communicate(timeout=60)
-                        if proc.returncode != 0:
-                            err = (stderr or "").lower()
-                            if "cancel" in err or "user cancel" in err or "-128" in err:
-                                return  # User cancelled — stop quietly
-                            time.sleep(5); continue
-                        if stdout:
-                            for block in re.split(r'\n\s*\n', stdout):
-                                block = block.strip()
-                                if len(block.split('\n')) > 3:
-                                    self._parse_pm(block)
-                    except subprocess.TimeoutExpired:
-                        if proc: proc.kill()
-                        time.sleep(2)
-                    except Exception:
-                        time.sleep(5)
+                if proc.returncode != 0:
+                    err = (proc.stderr or "").lower()
+                    if "cancel" in err or "-128" in err:
+                        return  # User cancelled
+                    return
+            except Exception:
+                return
+
+            # Sudoers rule created — stream with sudo (no more passwords)
+            _stream_pm(["sudo"])
         except Exception as e:
             print(f"  ⚠️  powermetrics: {e}")
 
