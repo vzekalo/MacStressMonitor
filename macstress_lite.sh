@@ -1,7 +1,7 @@
 #!/bin/bash
 # MacStress Lite — Pure Bash, Zero Dependencies
 # Works on any Mac from 2010+ (bash 3.2 compatible)
-VERSION="1.3.0"
+VERSION="1.4.2"
 GITHUB_REPO="vzekalo/MacStressMonitor"
 
 R=$'\033[0;31m'
@@ -95,8 +95,9 @@ cleanup() {
     stop_s
     [ -n "$PM_PID" ] && kill "$PM_PID" 2>/dev/null
     [ -n "$PARSER_PID" ] && kill "$PARSER_PID" 2>/dev/null
+    [ -n "$_DIO_PID" ] && kill "$_DIO_PID" 2>/dev/null
     sudo pkill -9 powermetrics 2>/dev/null
-    rm -f "$PM_DATA" "${PM_DATA}.tmp" /tmp/macstress_pm_raw /tmp/macstress_bench_* 2>/dev/null
+    rm -f "$PM_DATA" "${PM_DATA}.tmp" /tmp/macstress_pm_raw /tmp/macstress_bench_* /tmp/macstress_dio 2>/dev/null
     tput cnorm 2>/dev/null
     printf "\n  ${G}Bye!${N}\n\n"
     exit 0
@@ -266,28 +267,65 @@ check_updates() {
     latest=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/' | sed 's/^v//')
     if [ -z "$latest" ]; then
         printf "  ${R}Не вдалося перевірити${N}\n"
-    else
-        # Semantic version comparison: split to major.minor.patch
-        IFS='.' read -r lmaj lmin lpat <<EOF
+        sleep 2
+        return
+    fi
+
+    # Semantic version comparison
+    IFS='.' read -r lmaj lmin lpat <<EOF
 $latest
 EOF
-        IFS='.' read -r cmaj cmin cpat <<EOF
+    IFS='.' read -r cmaj cmin cpat <<EOF
 $VERSION
 EOF
-        lmaj=${lmaj:-0}; lmin=${lmin:-0}; lpat=${lpat:-0}
-        cmaj=${cmaj:-0}; cmin=${cmin:-0}; cpat=${cpat:-0}
-        is_newer=0
-        [ "$lmaj" -gt "$cmaj" ] 2>/dev/null && is_newer=1
-        [ "$lmaj" -eq "$cmaj" ] 2>/dev/null && [ "$lmin" -gt "$cmin" ] 2>/dev/null && is_newer=1
-        [ "$lmaj" -eq "$cmaj" ] 2>/dev/null && [ "$lmin" -eq "$cmin" ] 2>/dev/null && [ "$lpat" -gt "$cpat" ] 2>/dev/null && is_newer=1
-        if [ "$is_newer" -eq 1 ]; then
-            printf "  ${G}🆕 Нова версія: v%s (поточна: v%s)${N}\n" "$latest" "$VERSION"
-            printf "  ${C}📥 https://github.com/%s/releases/latest${N}\n" "$GITHUB_REPO"
-        else
-            printf "  ${G}✅ Актуальна версія: v%s${N}\n" "$VERSION"
-        fi
+    lmaj=${lmaj:-0}; lmin=${lmin:-0}; lpat=${lpat:-0}
+    cmaj=${cmaj:-0}; cmin=${cmin:-0}; cpat=${cpat:-0}
+    is_newer=0
+    [ "$lmaj" -gt "$cmaj" ] 2>/dev/null && is_newer=1
+    [ "$lmaj" -eq "$cmaj" ] 2>/dev/null && [ "$lmin" -gt "$cmin" ] 2>/dev/null && is_newer=1
+    [ "$lmaj" -eq "$cmaj" ] 2>/dev/null && [ "$lmin" -eq "$cmin" ] 2>/dev/null && [ "$lpat" -gt "$cpat" ] 2>/dev/null && is_newer=1
+
+    if [ "$is_newer" -eq 1 ]; then
+        printf "  ${G}🆕 Нова версія: v%s (поточна: v%s)${N}\n" "$latest" "$VERSION"
+        printf "  ${Y}Оновити зараз? [y/N]${N} "
+        read -n 1 yn < /dev/tty 2>/dev/null
+        printf "\n"
+        case "$yn" in
+            y|Y)
+                printf "  ${C}⬇ Завантаження v%s...${N}\n" "$latest"
+                # Download from release tag (not main — CDN caches main)
+                dl_url="https://raw.githubusercontent.com/${GITHUB_REPO}/v${latest}/macstress_lite.sh"
+                tmp_f="/tmp/macstress_lite_new.sh"
+                if curl -fsSL "$dl_url" -o "$tmp_f" 2>/dev/null; then
+                    # Verify it's a bash script and has the new version
+                    dl_ver=$(grep '^VERSION=' "$tmp_f" 2>/dev/null | head -1 | sed 's/VERSION="//;s/"//')
+                    if [ -n "$dl_ver" ] && head -1 "$tmp_f" | grep -q 'bash'; then
+                        # Find our own script path
+                        my_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+                        cp "$tmp_f" "$my_path" && chmod +x "$my_path"
+                        rm -f "$tmp_f"
+                        printf "  ${G}✅ Оновлено: v%s → v%s${N}\n" "$VERSION" "$dl_ver"
+                        printf "  ${Y}Перезапуск...${N}\n"
+                        sleep 1
+                        exec bash "$my_path"
+                    else
+                        printf "  ${R}❌ Завантажений файл пошкоджений${N}\n"
+                        rm -f "$tmp_f"
+                    fi
+                else
+                    printf "  ${R}❌ Помилка завантаження${N}\n"
+                fi
+                sleep 2
+                ;;
+            *)
+                printf "  ${D}Пропущено${N}\n"
+                sleep 1
+                ;;
+        esac
+    else
+        printf "  ${G}✅ Актуальна версія: v%s${N}\n" "$VERSION"
+        sleep 2
     fi
-    sleep 2
 }
 
 install_app() {
@@ -325,15 +363,26 @@ PLIST
     sleep 2
 }
 
+# Background disk I/O cache (avoid blocking main loop with iostat)
+# Uses temp file because bash subshells can't update parent variables
+_DIO_FILE="/tmp/macstress_dio"
+printf "R:0.0 W:0.0 MB/s" > "$_DIO_FILE"
+_update_dio() {
+    while :; do
+        io=$(iostat -d -c 2 2>/dev/null | tail -1)
+        if [ -n "$io" ]; then
+            r=$(echo "$io" | awk '{printf "%.1f", $2/1024}')
+            w=$(echo "$io" | awk '{printf "%.1f", $3/1024}')
+            printf "R:%s W:%s MB/s" "$r" "$w" > "$_DIO_FILE"
+        fi
+        sleep 4
+    done
+}
+_update_dio &
+_DIO_PID=$!
+
 disk_io() {
-    io=$(iostat -d -c 2 2>/dev/null | tail -1)
-    if [ -n "$io" ]; then
-        r=$(echo "$io" | awk '{printf "%.1f", $2/1024}')
-        w=$(echo "$io" | awk '{printf "%.1f", $3/1024}')
-        printf "R:%s W:%s MB/s" "$r" "$w"
-    else
-        printf "n/a"
-    fi
+    cat "$_DIO_FILE" 2>/dev/null || printf "n/a"
 }
 
 # ===== HEADER =============================================
@@ -424,7 +473,7 @@ while true; do
     printf "                                                          \n"
     printf "                                                          \n"
 
-    read -t 2 -n 1 key < /dev/tty 2>/dev/null
+    read -t 3 -n 1 key < /dev/tty 2>/dev/null
     case "$key" in
         1) s_cpu 120 ;;
         2) s_mem 512 120 ;;
