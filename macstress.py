@@ -338,13 +338,12 @@ class MetricsCollector:
             if gpu_t: self.data["gpu_temp"] = round(max(gpu_t), 1)
 
     def _powermetrics_loop(self):
-        """Run powermetrics with admin privileges (multiple elevation strategies)."""
+        """Run powermetrics with admin privileges (piping password via sudo -S)."""
         try:
             samplers = "smc,cpu_power,gpu_power" if self.sys_info["arch"] == "intel" else "cpu_power,gpu_power"
-            sudoers_rule = "/etc/sudoers.d/macstress_pm"
 
-            def _stream_pm(cmd_prefix=[]):
-                """Stream powermetrics output continuously."""
+            def _stream_pm_simple(cmd_prefix=[]):
+                """Stream powermetrics output continuously (no stdin needed)."""
                 self._pm_proc = subprocess.Popen(
                     cmd_prefix + ["powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -358,54 +357,37 @@ class MetricsCollector:
 
             # Strategy 1: Already root
             if os.geteuid() == 0:
-                _stream_pm()
+                _stream_pm_simple()
                 return
 
-            # Strategy 2: Sudoers rule exists from previous run
-            if os.path.isfile(sudoers_rule):
-                _stream_pm(["sudo"])
-                return
-
-            # Strategy 3: Native macOS password dialog
-            # Use 'display dialog' to get password, then pipe to sudo -S
+            # Strategy 2: sudo -n works (no password needed — cached or NOPASSWD)
             try:
-                dialog_script = (
-                    'text returned of (display dialog '
-                    '"MacStress: введіть пароль для моніторингу температури та енергії" '
-                    'with title "MacStress" default answer "" with hidden answer '
-                    'with icon caution)'
-                )
-                proc = subprocess.run(
-                    ["osascript", "-e", dialog_script],
-                    capture_output=True, text=True, timeout=120
-                )
-                if proc.returncode == 0 and proc.stdout.strip():
-                    pw = proc.stdout.strip()
-                    self._pm_proc = subprocess.Popen(
-                        ["sudo", "-S", "powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
-                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                    )
-                    self._pm_proc.stdin.write(pw + "\n")
-                    self._pm_proc.stdin.flush()
-                    del pw  # Don't keep password in memory
-                    buf = []
-                    for line in self._pm_proc.stdout:
-                        if self._stop.is_set(): break
-                        buf.append(line)
-                        if line.strip() == "" and len(buf) > 5:
-                            self._parse_pm("".join(buf)); buf = []
+                test = subprocess.run(["sudo", "-n", "powermetrics", "--samplers", samplers, "-i", "1000", "-n", "1"],
+                                      capture_output=True, timeout=10)
+                if test.returncode == 0:
+                    _stream_pm_simple(["sudo", "-n"])
                     return
             except Exception:
                 pass
 
-            # Strategy 4: Terminal sudo -v fallback (old macOS without display dialog)
-            try:
-                sv = subprocess.run(["sudo", "-v"], timeout=60)
-                if sv.returncode == 0:
-                    _stream_pm(["sudo"])
-                    return
-            except Exception:
-                pass
+            # Strategy 3: Use password from pre-elevation (piped via sudo -S)
+            pw = getattr(self, '_sudo_pw', None)
+            if pw:
+                self._pm_proc = subprocess.Popen(
+                    ["sudo", "-S", "powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+                self._pm_proc.stdin.write(pw + "\n")
+                self._pm_proc.stdin.flush()
+                self._sudo_pw = None  # Clear password from memory
+                buf = []
+                for line in self._pm_proc.stdout:
+                    if self._stop.is_set(): break
+                    buf.append(line)
+                    if line.strip() == "" and len(buf) > 5:
+                        self._parse_pm("".join(buf)); buf = []
+                return
+
         except Exception as e:
             print(f"  ⚠️  powermetrics: {e}")
 
@@ -825,6 +807,11 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, OSError): pass
         elif self.path == "/api/status":
             self._ok("application/json", json.dumps({"metrics": _mc.get_snapshot(), "active": _sm.get_active(), "sys_info": _si}).encode())
+        elif self.path == "/api/disk_bench_result":
+            self._ok("application/json", json.dumps({
+                "running": _disk_bench_running,
+                "results": _disk_bench_results
+            }).encode())
         else:
             self.send_error(404)
 
@@ -853,11 +840,6 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=_run_disk_benchmark, daemon=True).start()
                 self._ok("application/json", json.dumps({"ok": True, "status": "started"}).encode())
-        elif self.path == "/api/disk_bench_result":
-            self._ok("application/json", json.dumps({
-                "running": _disk_bench_running,
-                "results": _disk_bench_results
-            }).encode())
         else:
             self.send_error(404)
 
@@ -1067,22 +1049,26 @@ def _run_disk_benchmark():
 # ═══════════════════════════ Sudo Pre-Elevation ═════════════════════════
 
 def _pre_elevate_sudo():
-    """Try to get sudo credentials early, before NSApp takes over.
-    Uses native macOS password dialog → sudo -S -v to cache credentials."""
+    """Get sudo password early via native macOS dialog.
+    Returns the password string (to pipe via sudo -S), or None if not needed/failed.
+    NOTE: sudo caches credentials per-TTY on macOS, so we CANNOT rely on
+    sudo -v caching — we must pipe the password directly to sudo -S."""
     if os.geteuid() == 0:
-        return True
-    # Check if sudo is already cached (non-interactive)
+        return None  # already root, no password needed
+    # Check if sudo is already working without password
     try:
         r = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5)
         if r.returncode == 0:
-            return True
+            print("  🔐 sudo: вже авторизовано")
+            return None  # sudo works without password
     except Exception:
         pass
     # Show native macOS password dialog
     try:
         dialog_script = (
             'text returned of (display dialog '
-            '"MacStress: введіть пароль для моніторингу енергії" '
+            '"MacStress потребує пароль для моніторингу '
+            'температури та споживання енергії" '
             'with title "MacStress" default answer "" with hidden answer '
             'with icon caution)'
         )
@@ -1092,18 +1078,21 @@ def _pre_elevate_sudo():
         )
         if proc.returncode == 0 and proc.stdout.strip():
             pw = proc.stdout.strip()
+            # Verify the password is correct
             sv = subprocess.run(
                 ["sudo", "-S", "-v"],
                 input=pw + "\n", capture_output=True, text=True, timeout=10
             )
-            del pw
             if sv.returncode == 0:
-                print("  🔐 sudo: авторизовано")
-                return True
-    except Exception:
-        pass
-    print("  ⚠️  sudo: не авторизовано — дані енергії можуть бути недоступні")
-    return False
+                print("  🔐 sudo: авторизовано через діалог")
+                return pw  # Return password for piping to sudo -S
+            else:
+                print("  ❌ sudo: невірний пароль")
+                del pw
+    except Exception as e:
+        print(f"  ⚠️  sudo dialog: {e}")
+    print("  ⚠️  Дані температури/енергії можуть бути недоступні")
+    return None
 
 # ═══════════════════════════ Update Check ═══════════════════════════════
 
@@ -1208,6 +1197,12 @@ fi
 </dict>
 </plist>
 """)
+    # Force Finder to refresh icon cache on reinstall
+    subprocess.run(["touch", str(app_path)], capture_output=True)
+    subprocess.run([
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+        "-f", str(app_path)
+    ], capture_output=True)
 
     print(f"  ✅ {app_name}.app створено в ~/Applications/")
     print(f"  📂 {app_path}")
@@ -1249,9 +1244,13 @@ def main():
     threading.Thread(target=check_for_updates, args=(True,), daemon=True).start()
 
     # Pre-elevate sudo for powermetrics (before NSApp takes over the process)
-    _si["has_sudo"] = _pre_elevate_sudo()
+    _sudo_pw = _pre_elevate_sudo()
+    _si["has_sudo"] = os.geteuid() == 0 or _sudo_pw is not None
 
     _mc = MetricsCollector(_si)
+    if _sudo_pw:
+        _mc._sudo_pw = _sudo_pw  # Pass password for piping to sudo -S
+        del _sudo_pw
     _sm = StressManager(_si)
     _mc.start()
 
