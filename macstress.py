@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -1353,16 +1353,30 @@ fi
 </plist>
 """)
 
-    # Force icon cache refresh:
-    # 1. Touch the bundle to update mtime
-    subprocess.run(["touch", str(app_path)], capture_output=True)
-    # 2. Nuke LaunchServices database and re-register
+    # Force icon cache refresh — multi-step to defeat macOS caching:
     lsreg = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-    subprocess.run([lsreg, "-kill", "-r", "-domain", "local", "-domain", "system", "-domain", "user"],
-                   capture_output=True)
+
+    # 1. Unregister the app first (clears old icon association)
+    subprocess.run([lsreg, "-u", str(app_path)], capture_output=True)
+
+    # 2. Clear icon services cache for this app
+    icon_cache = Path.home() / "Library" / "Caches" / "com.apple.iconservices.store"
+    if icon_cache.exists():
+        shutil.rmtree(str(icon_cache), ignore_errors=True)
+
+    # 3. Kill iconservicesd so it rebuilds the cache from scratch
+    subprocess.run(["killall", "iconservicesd"], capture_output=True)
+
+    # 4. Re-register the app with updated icon
     subprocess.run([lsreg, "-f", str(app_path)], capture_output=True)
-    # 3. Restart Dock (refreshes Launchpad + Finder sidebar icons)
+
+    # 5. Touch to update mtime (some Finder code checks this)
+    subprocess.run(["touch", str(app_path)], capture_output=True)
+    subprocess.run(["touch", str(app_path / "Contents" / "Info.plist")], capture_output=True)
+
+    # 6. Restart Dock + Finder to pick up new icon
     subprocess.run(["killall", "Dock"], capture_output=True)
+    subprocess.run(["killall", "Finder"], capture_output=True)
 
     print(f"  ✅ {app_name}.app створено в ~/Applications/")
     print(f"  📂 {app_path}")
