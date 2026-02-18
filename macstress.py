@@ -857,17 +857,15 @@ class Handler(BaseHTTPRequestHandler):
                 "results": _disk_bench_results
             }).encode())
         elif self.path == "/api/check_update":
-            latest = check_for_updates(silent=True)
+            result = check_for_updates(silent=True)
             has_update = False
-            if latest:
-                 # Helper to parse version
-                 def vt(v): return tuple(int(x) for x in v.split(".")) if "." in v else (0,)
-                 if vt(latest) > vt(VERSION):
-                     has_update = True
+            latest_ver = VERSION
+            if result:
+                has_update, latest_ver = result
             
             self._ok("application/json", json.dumps({
                 "current": VERSION,
-                "latest": latest,
+                "latest": latest_ver,
                 "has_update": has_update,
                 "url": f"https://github.com/{GITHUB_REPO}/releases/latest",
                 "custom_ver": VERSION
@@ -983,25 +981,28 @@ def run_native_app(port):
 
         def checkUpdate_(self, sender):
             """Trigger update check and show alert."""
-            latest = check_for_updates(silent=True)
-            msg = "You are using the latest version."
-            info = f"MacStress v{VERSION}"
-            if latest and latest != VERSION:
-                # Simple check: is latest > VERSION?
-                def vt(v): return tuple(int(x) for x in v.split(".")) if "." in v else (0,)
-                if vt(latest) > vt(VERSION):
-                    msg = f"New version available: v{latest}"
-                    info = f"Current: v{VERSION}. Visit GitHub to download."
+            result = check_for_updates(silent=True)
+            has_update = False
+            latest_ver = VERSION
+            if result:
+                has_update, latest_ver = result
+            
+            if has_update:
+                msg = f"Нова версія доступна: v{latest_ver}"
+                info = f"Поточна: v{VERSION}. Відкрийте GitHub для завантаження."
+            else:
+                msg = "Ви використовуєте останню версію."
+                info = f"MacStress v{VERSION}"
             
             alert = NSAlert.alloc().init()
             alert.setMessageText_(msg)
             alert.setInformativeText_(info)
             alert.addButtonWithTitle_("OK")
-            if latest and latest != VERSION:
+            if has_update:
                 alert.addButtonWithTitle_("Open GitHub")
             
             resp = alert.runModal()
-            if latest and latest != VERSION and resp == 1001: # Second button
+            if has_update and resp == 1001: # Second button
                  subprocess.run(["open", f"https://github.com/{GITHUB_REPO}/releases/latest"])
 
         def updateMenuBar_(self, timer):
