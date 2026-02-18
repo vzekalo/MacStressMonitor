@@ -1,77 +1,85 @@
-# 🔥 MacStress — Native macOS Stress Test & System Monitor
+# 🔥 MacStress — macOS Stress Test & System Monitor
 
-Real-time system monitoring + stress testing for macOS, built with Python & PyObjC.
+Real-time system monitoring + stress testing for macOS.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-macOS-blue)
-![Python](https://img.shields.io/badge/python-3.8%2B-yellow)
 ![Arch](https://img.shields.io/badge/arch-Apple%20Silicon%20%7C%20Intel-orange)
 
-## ⚡ One-Line Install & Run
+## ⚡ MacStress Lite — Zero Dependencies (Recommended)
 
-**Standalone app — ніяких залежностей:**
+**Works on ANY Mac (2010+). No Python, no Xcode, nothing to install.**
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress_lite.sh" -o /tmp/ms.sh && bash /tmp/ms.sh
+```
+
+### What it monitors:
+| Metric | Source |
+|--------|--------|
+| CPU Usage | `ps` (real-time %, color bar) |
+| RAM Usage | `vm_stat` (active+wired+compressed) |
+| Swap | `sysctl vm.swapusage` |
+| Load Average | `sysctl vm.loadavg` |
+| Disk I/O | `iostat` (live R/W MB/s) |
+| Temperature | `powermetrics` (CPU/GPU °C) |
+| Power | `powermetrics` (CPU/GPU watts) |
+| Battery | `pmset` (charge %) |
+
+### Stress tests:
+| Key | Test | Duration |
+|-----|------|----------|
+| `[1]` | CPU — all cores 100% | 2 min |
+| `[2]` | RAM — allocate 512MB | 2 min |
+| `[3]` | Disk — continuous R/W 256MB | 2 min |
+| `[4]` | ALL — CPU + RAM + Disk combined | 3 min |
+| `[5]` | Disk Benchmark — write+read 256MB, shows MB/s | ~10s |
+| `[x]` | Stop stress test | — |
+| `[q]` | Quit | — |
+
+### Requirements:
+- macOS 10.8+ (any Mac from 2010)
+- bash 3.2+ (built into macOS)
+- Admin password (one-time, for temperature/power)
+
+---
+
+## 🖥 MacStress Full — Native macOS App
+
+Full-featured version with web dashboard, menu bar, Metal GPU stress, and drag & drop tiles.
+
+### Standalone App (Apple Silicon):
 
 ```bash
 curl -fsSL https://github.com/vzekalo/MacStressMonitor/releases/download/v1.0.0/MacStress.zip -o /tmp/MacStress.zip && unzip -o /tmp/MacStress.zip -d /Applications && open /Applications/MacStress.app
 ```
 
-> ⚠️ Apple Silicon only (M1/M2/M3/M4). For Intel use:
-> ```bash
-> bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/install.sh)
-> ```
+### Auto-Install (Intel + Apple Silicon):
 
-## ✨ Features
-
-- **System Monitor** — CPU, RAM, Swap, Disk I/O with live charts
-- **Temperature Sensors** — CPU & GPU via IOKit HID (no sudo needed)
-- **Power Consumption** — CPU/GPU/Total watts via `powermetrics` (admin prompt)
-- **Stress Tests** — CPU, GPU (Metal), Memory, Disk I/O with timer
-- **Native macOS App** — Menu bar status item + WKWebView dashboard
-- **Drag & Drop Tiles** — Reorder dashboard tiles with animations
-- **Apple Silicon + Intel** — Optimized for both architectures
-
-## 📸 Dashboard
-
-The web dashboard runs on `http://localhost:9630` and shows:
-
-| Tile | Metrics |
-|------|---------|
-| CPU Usage | Usage %, load average, per-core charts |
-| Temperatures | CPU & GPU °C with circular gauges |
-| Power | CPU / GPU / Total watts |
-| Memory | Used %, GB breakdown, pressure |
-| Swap | SSD→RAM swap usage & pressure bar |
-| Disk I/O | Read / Write MB/s with live chart |
-| System Info | Model, OS, CPU, GPU, Architecture |
-
-## 🖥 Menu Bar
-
-Live stats in your menu bar: `CPU 56%  RAM 84%  52°C  17.1W`
-
-## 🚀 Usage
-
-### Quick Start
 ```bash
-python3 macstress.py
+bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/install.sh)
 ```
 
-### Build .app Bundle
-```bash
-chmod +x build_app.sh
-./build_app.sh
-open MacStress.app
-```
+### Full Features:
+- **Web Dashboard** on `http://localhost:9630` with live charts
+- **Temperature Sensors** — CPU & GPU via IOKit HID
+- **Power Consumption** — CPU/GPU/Total watts via `powermetrics`
+- **Stress Tests** — CPU, GPU (Metal), Memory, Disk I/O
+- **Menu Bar** — Live stats: `CPU 56%  RAM 84%  52°C  17.1W`
+- **Drag & Drop Tiles** — Reorder dashboard with animations
 
-### Requirements
-- macOS 11+ (Big Sur or later)
-- Python 3.8+
-- PyObjC (auto-installed for native app)
+### Requirements:
+- macOS 11+ (Big Sur)
+- Python 3.8+ & PyObjC (auto-installed via `install.sh`)
+
+---
 
 ## 🔐 Admin Access
 
-Power consumption monitoring requires `powermetrics`, which needs admin privileges.
-MacStress uses `osascript` to request access with a native password dialog — 
-the password is cached by macOS for several minutes after the first entry.
+Temperature and power monitoring use `powermetrics`, which requires admin privileges.
+
+- **Lite version**: asks for password once at startup via `sudo`
+- **Full version**: creates a sudoers rule (one-time password dialog)
 
 ## 📄 License
 
