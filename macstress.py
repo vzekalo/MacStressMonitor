@@ -916,7 +916,7 @@ def run_native_app(port):
     import objc
     from AppKit import (
         NSApplication, NSApp, NSObject, NSStatusBar, NSVariableStatusItemLength,
-        NSMenu, NSMenuItem, NSFont, NSAttributedString, NSImage,
+        NSMenu, NSMenuItem, NSFont, NSAttributedString, NSImage, NSAlert,
         NSWindow, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
         NSWindowStyleMaskMiniaturizable, NSWindowStyleMaskResizable,
         NSBackingStoreBuffered, NSApplicationActivationPolicyAccessory,
