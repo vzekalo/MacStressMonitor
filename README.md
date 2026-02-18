@@ -9,8 +9,10 @@ Real-time system monitoring + stress testing for macOS, built with Python & PyOb
 
 ## ⚡ One-Line Install & Run
 
+No Python or Xcode needed — everything is installed automatically:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress.py -o /tmp/macstress.py && python3 /tmp/macstress.py
+bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/install.sh)
 ```
 
 ## ✨ Features
