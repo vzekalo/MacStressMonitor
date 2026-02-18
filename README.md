@@ -48,16 +48,22 @@ curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macs
 
 Full-featured version with web dashboard, menu bar, Metal GPU stress, and drag & drop tiles.
 
-### Standalone App (Apple Silicon):
-
-```bash
-curl -fsSL https://github.com/vzekalo/MacStressMonitor/releases/download/v1.0.0/MacStress.zip -o /tmp/MacStress.zip && unzip -o /tmp/MacStress.zip -d /Applications && open /Applications/MacStress.app
-```
-
-### Auto-Install (Intel + Apple Silicon):
+### Universal Install (any Mac):
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/install.sh)
+```
+
+The installer automatically:
+1. **Finds or installs Python 3** — checks system → tries CLT → downloads `.pkg` from python.org
+2. **Bootstraps pip** — uses `ensurepip` or downloads from GitHub
+3. **Installs PyObjC** — for native menu bar (optional)
+4. **Falls back gracefully** — if PyObjC fails, runs web-only dashboard in browser
+
+### Standalone App (Apple Silicon only):
+
+```bash
+curl -fsSL https://github.com/vzekalo/MacStressMonitor/releases/download/v1.0.0/MacStress.zip -o /tmp/MacStress.zip && unzip -o /tmp/MacStress.zip -d /Applications && open /Applications/MacStress.app
 ```
 
 ### Full Features:
@@ -68,9 +74,20 @@ bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/mai
 - **Menu Bar** — Live stats: `CPU 56%  RAM 84%  52°C  17.1W`
 - **Drag & Drop Tiles** — Reorder dashboard with animations
 
+### Compatibility:
+
+| macOS | Python Source | Mode |
+|-------|-------------|------|
+| 14+ (Sonoma) | System / CLT | Full native app |
+| 11-13 (Big Sur–Ventura) | CLT / python.org | Full native app |
+| 10.15 (Catalina) | python.org 3.12 | Full native app |
+| 10.9-10.14 (Mavericks–Mojave) | python.org 3.9 | Web-only dashboard |
+| 10.8 (Mountain Lion) | python.org 3.7 | Web-only dashboard |
+
 ### Requirements:
-- macOS 11+ (Big Sur)
-- Python 3.8+ & PyObjC (auto-installed via `install.sh`)
+- macOS 10.8+ (Mountain Lion or later)
+- Internet connection (for first install)
+- No App Store, no Homebrew needed
 
 ---
 
