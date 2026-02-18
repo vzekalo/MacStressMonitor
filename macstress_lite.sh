@@ -26,49 +26,56 @@ GOT_SUDO=1
 
 get_pm() { grep "^$1=" "$PM_DATA" 2>/dev/null | tail -1 | cut -d= -f2; }
 
-# ===== ASK FOR PASSWORD (before clear, with /dev/tty) =====
-# When run via bash <(curl ...), stdin is the pipe, not terminal.
-# We MUST read password from /dev/tty explicitly.
+# ===== PASSWORD (with /dev/tty for piped scripts) =========
 printf "\n"
 printf "  ${Y}*${N} ${B}MacStress Lite${N}\n"
 printf "  ${D}------------------------------------------------${N}\n"
-printf "  For temp/power monitoring, admin password is needed.\n"
-printf "  Enter password below (asked once):\n"
+printf "  Admin password is needed for temp/power.\n"
+printf "  (Enter below, or Ctrl+C to skip)\n"
 printf "\n"
 
-# Try sudo with tty
-if sudo -v < /dev/tty 2>/dev/null; then
+# Ask for password explicitly through terminal
+sudo -v < /dev/tty 2>&1
+if [ $? -eq 0 ]; then
     GOT_SUDO=0
-    printf "  ${G}OK - admin access granted${N}\n"
+    printf "  ${G}OK${N}\n"
 else
-    printf "  ${Y}Skipped - temp/power unavailable${N}\n"
+    printf "  ${Y}Skipped${N}\n"
 fi
 sleep 1
 
-# Start powermetrics if we have sudo
+# ===== START POWERMETRICS =================================
 if [ "$GOT_SUDO" -eq 0 ]; then
     if [ "$ARCH" = "x86_64" ]; then
-        PMS="smc,cpu_power,gpu_power"
+        PMS="smc"
     else
         PMS="cpu_power,gpu_power"
     fi
-    sudo powermetrics --samplers "$PMS" -i 3000 -n 0 2>/dev/null | while IFS= read -r line; do
-        ll=$(echo "$line" | tr '[:upper:]' '[:lower:]')
-        val=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        [ -z "$val" ] && continue
-        case "$ll" in
-            *"cpu die temp"*|*"cpu thermal"*)     echo "cpu_temp=$val" >> "$PM_DATA" ;;
-            *"gpu die temp"*|*"gpu thermal"*)     echo "gpu_temp=$val" >> "$PM_DATA" ;;
-            "cpu power"*|"package power"*|*"intel energy"*) echo "cpu_power=$val" >> "$PM_DATA" ;;
-            "gpu power"*)                         echo "gpu_power=$val" >> "$PM_DATA" ;;
-        esac
+    # Run powermetrics, save ALL output to temp file for parsing
+    sudo powermetrics --samplers "$PMS" -i 3000 2>/dev/null > /tmp/macstress_pm_raw &
+    PM_PID=$!
+    # Background parser
+    (while :; do
+        sleep 4
+        [ ! -f /tmp/macstress_pm_raw ] && continue
+        # Parse temperatures (various formats)
+        ct=$(grep -i "die temperature\|thermal level" /tmp/macstress_pm_raw 2>/dev/null | grep -i cpu | tail -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        gt=$(grep -i "die temperature\|thermal level" /tmp/macstress_pm_raw 2>/dev/null | grep -i gpu | tail -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        # Parse power
+        cpw=$(grep -iE "^cpu power|^package power|intel energy" /tmp/macstress_pm_raw 2>/dev/null | tail -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        gpw=$(grep -iE "^gpu power" /tmp/macstress_pm_raw 2>/dev/null | tail -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        [ -n "$ct" ] && echo "cpu_temp=$ct" >> "$PM_DATA"
+        [ -n "$gt" ] && echo "gpu_temp=$gt" >> "$PM_DATA"
+        [ -n "$cpw" ] && echo "cpu_power=$cpw" >> "$PM_DATA"
+        [ -n "$gpw" ] && echo "gpu_power=$gpw" >> "$PM_DATA"
+        # Trim
         lc=$(wc -l < "$PM_DATA" 2>/dev/null)
         [ "$lc" -gt 40 ] 2>/dev/null && tail -20 "$PM_DATA" > "${PM_DATA}.tmp" && mv "${PM_DATA}.tmp" "$PM_DATA"
-    done &
-    PM_PID=$!
+    done) &
+    PARSER_PID=$!
 fi
 
-# ===== STRESS STATE =====
+# ===== STRESS STATE =======================================
 SPIDS=""
 STYPE=""
 SDUR=0
@@ -85,15 +92,16 @@ stop_s() {
 cleanup() {
     stop_s
     [ -n "$PM_PID" ] && kill "$PM_PID" 2>/dev/null
+    [ -n "$PARSER_PID" ] && kill "$PARSER_PID" 2>/dev/null
     sudo pkill -9 powermetrics 2>/dev/null
-    rm -f "$PM_DATA" "${PM_DATA}.tmp" /tmp/macstress_bench_* 2>/dev/null
+    rm -f "$PM_DATA" "${PM_DATA}.tmp" /tmp/macstress_pm_raw /tmp/macstress_bench_* 2>/dev/null
     tput cnorm 2>/dev/null
     printf "\n  ${G}Bye!${N}\n\n"
     exit 0
 }
 trap cleanup EXIT INT TERM
 
-# ===== STRESS FUNCTIONS =====
+# ===== STRESS FUNCTIONS ===================================
 s_cpu() {
     d=${1:-120}; stop_s; STYPE="CPU ($CORES cores)"; SDUR=$d; ST0=$(date +%s)
     i=0; while [ "$i" -lt "$CORES" ]; do
@@ -149,36 +157,84 @@ s_all() {
     apid $!
 }
 
-# ===== DISK BENCHMARK =====
-BENCH_RESULT=""
+# ===== DISK BENCHMARK (multi-size) ========================
+BENCH_LINES=""
 
-disk_bench() {
-    BENCH_RESULT="running..."
-    bf="/tmp/macstress_bench_file"
-    sz=256  # MB
+run_dd_bench() {
+    # $1=label $2=bs $3=count $4=file
+    label=$1; bs=$2; cnt=$3; f=$4
+    total_mb=$5
 
-    # Write test
-    t0=$(date +%s)
-    dd if=/dev/zero of="$bf" bs=1m count=$sz 2>/dev/null
+    # Write
+    t0s=$(date +%s); t0ms=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time*1000' 2>/dev/null || echo "0")
+    dd if=/dev/zero of="$f" bs="$bs" count="$cnt" 2>/dev/null
     sync
-    t1=$(date +%s)
-    wd=$((t1 - t0))
-    [ "$wd" -lt 1 ] && wd=1
-    ws=$((sz / wd))
+    t1s=$(date +%s); t1ms=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time*1000' 2>/dev/null || echo "0")
+    
+    if [ "$t0ms" != "0" ] && [ "$t1ms" != "0" ]; then
+        wms=$((t1ms - t0ms))
+        [ "$wms" -lt 1 ] && wms=1
+        ws=$(echo "scale=0; $total_mb * 1000 / $wms" | bc 2>/dev/null)
+    else
+        wd=$((t1s - t0s)); [ "$wd" -lt 1 ] && wd=1
+        ws=$((total_mb / wd))
+    fi
 
-    # Read test
-    t0=$(date +%s)
-    dd if="$bf" of=/dev/null bs=1m 2>/dev/null
-    t1=$(date +%s)
-    rd=$((t1 - t0))
-    [ "$rd" -lt 1 ] && rd=1
-    rs=$((sz / rd))
+    # Read (purge disk cache)
+    sudo purge 2>/dev/null
+    t0s=$(date +%s); t0ms=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time*1000' 2>/dev/null || echo "0")
+    dd if="$f" of=/dev/null bs="$bs" 2>/dev/null
+    t1s=$(date +%s); t1ms=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time*1000' 2>/dev/null || echo "0")
+    
+    if [ "$t0ms" != "0" ] && [ "$t1ms" != "0" ]; then
+        rms=$((t1ms - t0ms))
+        [ "$rms" -lt 1 ] && rms=1
+        rs=$(echo "scale=0; $total_mb * 1000 / $rms" | bc 2>/dev/null)
+    else
+        rd=$((t1s - t0s)); [ "$rd" -lt 1 ] && rd=1
+        rs=$((total_mb / rd))
+    fi
 
-    rm -f "$bf"
-    BENCH_RESULT="Write: ${ws} MB/s  Read: ${rs} MB/s  (${sz}MB test)"
+    rm -f "$f"
+    printf "  %-12s  Write: %4s MB/s  Read: %4s MB/s\n" "$label" "${ws:-?}" "${rs:-?}"
 }
 
-# ===== HELPERS =====
+disk_bench() {
+    bf="/tmp/macstress_bench"
+    printf "\n"
+    printf "  ${B}Disk Benchmark${N}\n"
+    printf "  ${D}------------------------------------------------${N}\n"
+
+    # Sequential 1MB blocks, 512MB total
+    printf "  ${Y}Testing...${N} Sequential 1MB x 512\n"
+    r1=$(run_dd_bench "Seq 1MB" "1m" 512 "${bf}_seq1m" 512)
+
+    # Sequential 256KB blocks, 256MB total
+    printf "  ${Y}Testing...${N} Sequential 256K x 1024\n"
+    r2=$(run_dd_bench "Seq 256K" "256k" 1024 "${bf}_seq256k" 256)
+
+    # Sequential 64KB blocks, 128MB total
+    printf "  ${Y}Testing...${N} Sequential 64K x 2048\n"
+    r3=$(run_dd_bench "Seq 64K" "64k" 2048 "${bf}_seq64k" 128)
+
+    # Sequential 4KB blocks, 32MB total
+    printf "  ${Y}Testing...${N} Random 4K x 8192\n"
+    r4=$(run_dd_bench "Rnd 4K" "4k" 8192 "${bf}_rnd4k" 32)
+
+    BENCH_LINES=$(printf "%s\n%s\n%s\n%s" "$r1" "$r2" "$r3" "$r4")
+
+    printf "\r  ${G}Done!${N}                              \n"
+    printf "\n"
+    printf "  ${B}Results:${N}\n"
+    printf "%s\n" "$BENCH_LINES"
+    printf "  ${D}------------------------------------------------${N}\n"
+    printf "  ${D}Press any key to continue...${N}\n"
+    read -n 1 dummy < /dev/tty 2>/dev/null
+    clear
+    draw_header
+}
+
+# ===== HELPERS ============================================
 parse_vm() {
     data=$(vm_stat 2>/dev/null); ps=16384
     [ "$ARCH" = "x86_64" ] && ps=4096
@@ -208,44 +264,43 @@ disk_io() {
     fi
 }
 
-# ===== DRAW HEADER =====
-clear
-printf "\n"
-printf "  ${Y}*${N} ${B}MacStress Lite${N}\n"
-printf "  ${D}================================================${N}\n"
-printf "  ${C}Model${N}  %s\n" "$MODEL"
-printf "  ${C}CPU${N}    %s\n" "$CPU_BRAND"
-printf "  ${C}Cores${N}  %s   ${C}RAM${N}  %s GB   ${C}macOS${N}  %s (%s)\n" "$CORES" "$RAM_GB" "$OS_VER" "$ARCH"
-printf "  ${D}================================================${N}\n"
-printf "  ${B}Controls:${N}\n"
-printf "  ${Y}[1]${N} CPU  ${Y}[2]${N} RAM  ${Y}[3]${N} Disk  ${Y}[4]${N} ALL  ${Y}[5]${N} Bench\n"
-printf "  ${Y}[x]${N} Stop stress   ${Y}[q]${N} Quit\n"
-printf "  ${D}================================================${N}\n"
-printf "\n\n\n\n\n\n\n\n\n\n"
+# ===== HEADER =============================================
+draw_header() {
+    printf "\n"
+    printf "  ${Y}*${N} ${B}MacStress Lite${N}\n"
+    printf "  ${D}================================================${N}\n"
+    printf "  ${C}Model${N}  %s\n" "$MODEL"
+    printf "  ${C}CPU${N}    %s\n" "$CPU_BRAND"
+    printf "  ${C}Cores${N}  %s   ${C}RAM${N}  %s GB   ${C}macOS${N}  %s (%s)\n" "$CORES" "$RAM_GB" "$OS_VER" "$ARCH"
+    printf "  ${D}================================================${N}\n"
+    printf "  ${B}Controls:${N}\n"
+    printf "  ${Y}[1]${N} CPU  ${Y}[2]${N} RAM  ${Y}[3]${N} Disk  ${Y}[4]${N} ALL\n"
+    printf "  ${Y}[5]${N} Disk Bench  ${Y}[x]${N} Stop  ${Y}[q]${N} Quit\n"
+    printf "  ${D}================================================${N}\n"
+    printf "\n\n\n\n\n\n\n\n\n\n"
+    LL=13
+}
 
-LL=13
+clear
+draw_header
 tput civis 2>/dev/null
 
-# ===== MAIN LOOP =====
+# ===== MAIN LOOP =========================================
 while true; do
-    # CPU
     cr=$(ps -A -o %cpu | awk '{s+=$1} END {printf "%.1f", s}')
     cp=$(echo "scale=1; $cr / $CORES" | bc 2>/dev/null || echo "0")
     ci=${cp%.*}; ci=${ci:-0}
     [ "$ci" -gt 100 ] 2>/dev/null && cp="100.0" && ci=100
 
-    # RAM
     mu=$(parse_vm); mu=${mu:-0}
     mp=$(echo "scale=1; $mu * 100 / $RAM_GB" | bc 2>/dev/null || echo "0")
     mi=${mp%.*}; mi=${mi:-0}
 
-    # System
     sw=$(sysctl vm.swapusage 2>/dev/null | grep -oE 'used = [0-9.]+M' | grep -oE '[0-9.]+')
     ld=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
     bt=$(pmset -g batt 2>/dev/null | grep -oE '[0-9]+%' | head -1)
     di=$(disk_io)
 
-    # Temp/Power
     ct=$(get_pm cpu_temp); gt=$(get_pm gpu_temp)
     pw=$(get_pm cpu_power); gw=$(get_pm gpu_power)
 
@@ -255,7 +310,6 @@ while true; do
     cb=$(bar "$ci")
     mb=$(bar "$mi")
 
-    # Temp string
     tp=""
     [ -n "$ct" ] && tp="${tp}CPU:${ct}C "
     [ -n "$gt" ] && tp="${tp}GPU:${gt}C "
@@ -265,7 +319,6 @@ while true; do
         if [ "$GOT_SUDO" -eq 0 ]; then tp="waiting..."; else tp="(need sudo)"; fi
     fi
 
-    # Stress status
     sl="${G}OFF${N}"
     if [ -n "$STYPE" ]; then
         now=$(date +%s); rem=$((SDUR - (now - ST0)))
@@ -276,25 +329,28 @@ while true; do
         fi
     fi
 
-    # Bench result
+    # Last bench result (one-liner)
     br=""
-    [ -n "$BENCH_RESULT" ] && br="$BENCH_RESULT"
+    if [ -n "$BENCH_LINES" ]; then
+        # Show just seq 1MB result as summary
+        br=$(echo "$BENCH_LINES" | head -1)
+    fi
 
-    # Render
     tput cup "$LL" 0 2>/dev/null
-    printf "  ${W}CPU${N}   %5s%%  ${cc}%s${N}                \n" "$cp" "$cb"
-    printf "  ${W}RAM${N}   %5s%%  ${mc}%s${N}  ${D}%s/%sGB${N}   \n" "$mp" "$mb" "$mu" "$RAM_GB"
-    printf "  ${W}Disk${N}  %-22s  ${W}Batt${N} %-5s    \n" "$di" "${bt:-n/a}"
-    printf "  ${W}Swap${N}  %-5s MB  ${W}Load${N} %-6s             \n" "${sw:-0}" "${ld:-?}"
-    printf "  ${W}Temp${N}  %-42s\n" "$tp"
-    printf "  ${W}Test${N}  %s                                  \n" "$sl"
+    printf "  ${W}CPU${N}   %5s%%  ${cc}%s${N}                       \n" "$cp" "$cb"
+    printf "  ${W}RAM${N}   %5s%%  ${mc}%s${N}  ${D}%s/%sGB${N}          \n" "$mp" "$mb" "$mu" "$RAM_GB"
+    printf "  ${W}Disk${N}  %-22s  ${W}Batt${N} %-5s       \n" "$di" "${bt:-n/a}"
+    printf "  ${W}Swap${N}  %-5s MB  ${W}Load${N} %-8s            \n" "${sw:-0}" "${ld:-?}"
+    printf "  ${W}Temp${N}  %-44s\n" "$tp"
+    printf "  ${W}Test${N}  %s                                     \n" "$sl"
     if [ -n "$br" ]; then
-        printf "  ${W}Bench${N} ${C}%s${N}                  \n" "$br"
+        printf "  ${W}Bench${N}${C}%s${N}          \n" "$br"
     else
-        printf "  ${D}[5] = disk benchmark${N}                        \n"
+        printf "  ${D}  [5] = disk benchmark (4 tests)${N}                \n"
     fi
     printf "  ${D}------------------------------------------------${N}\n"
-    printf "                                                       \n"
+    printf "                                                          \n"
+    printf "                                                          \n"
 
     read -t 2 -n 1 key < /dev/tty 2>/dev/null
     case "$key" in
