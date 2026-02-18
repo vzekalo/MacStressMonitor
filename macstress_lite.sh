@@ -1,12 +1,9 @@
 #!/bin/bash
 # ⚡ MacStress Lite — Pure Bash, Zero Dependencies
-# Works on ANY Mac without Python, Xcode, or anything else
 
-# ── Colors ────────────────────────────────────────────────
-R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'; B='\033[0;34m'
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'
 C='\033[0;36m'; W='\033[1;37m'; D='\033[0;90m'; N='\033[0m'; BOLD='\033[1m'
 
-# ── System Info ───────────────────────────────────────────
 MODEL=$(sysctl -n hw.model 2>/dev/null)
 CPU_BRAND=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
 CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
@@ -15,222 +12,187 @@ RAM_GB=$(echo "scale=0; $RAM_BYTES / 1073741824" | bc 2>/dev/null || echo "?")
 OS_VER=$(sw_vers -productVersion 2>/dev/null || echo "?")
 ARCH=$(uname -m)
 
-clear
-echo ""
-echo -e "  ${Y}⚡${N} ${BOLD}MacStress Lite${N} ${D}— Pure Bash Monitor + Stress${N}"
-echo -e "  ${D}──────────────────────────────────────────────${N}"
-echo -e "  ${C}Model:${N}  $MODEL    ${C}CPU:${N} $CPU_BRAND"
-echo -e "  ${C}Cores:${N}  $CORES  ·  ${C}RAM:${N} ${RAM_GB} GB  ·  ${C}macOS:${N} $OS_VER ($ARCH)"
-echo -e "  ${D}──────────────────────────────────────────────${N}"
+# ── Powermetrics background ──────────────────────────────
+PM_DATA="/tmp/macstress_pm_data"
+PM_PID_FILE="/tmp/macstress_pm_pid"
+printf "" > "$PM_DATA"
 
-# ── Stress test state ─────────────────────────────────────
-STRESS_PIDS=()
-STRESS_TYPE=""
-STRESS_DURATION=0
-STRESS_START=0
+start_powermetrics() {
+    [[ "$ARCH" == "x86_64" ]] && SAMPLERS="smc,cpu_power,gpu_power" || SAMPLERS="cpu_power,gpu_power"
+    (
+        sudo powermetrics --samplers "$SAMPLERS" -i 3000 -n 0 2>/dev/null | while IFS= read -r line; do
+            ll=$(echo "$line" | tr '[:upper:]' '[:lower:]')
+            if echo "$ll" | grep -q "cpu die temperature\|cpu thermal level"; then
+                val=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+                [[ -n "$val" ]] && echo "cpu_temp=$val" >> "$PM_DATA"
+            elif echo "$ll" | grep -q "gpu die temperature\|gpu thermal level"; then
+                val=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+                [[ -n "$val" ]] && echo "gpu_temp=$val" >> "$PM_DATA"
+            elif echo "$ll" | grep -q "^cpu power\|^package power"; then
+                val=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+                [[ -n "$val" ]] && echo "cpu_power=$val" >> "$PM_DATA"
+            elif echo "$ll" | grep -q "^gpu power"; then
+                val=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+                [[ -n "$val" ]] && echo "gpu_power=$val" >> "$PM_DATA"
+            fi
+            [[ $(wc -l < "$PM_DATA" 2>/dev/null) -gt 40 ]] && tail -20 "$PM_DATA" > "${PM_DATA}.tmp" && mv "${PM_DATA}.tmp" "$PM_DATA"
+        done
+    ) &
+    echo $! > "$PM_PID_FILE"
+}
+get_pm() { grep "^$1=" "$PM_DATA" 2>/dev/null | tail -1 | cut -d= -f2; }
+
+# ── Stress ────────────────────────────────────────────────
+STRESS_PIDS=(); STRESS_TYPE=""; STRESS_DUR=0; STRESS_T0=0
 
 stop_stress() {
-    for pid in "${STRESS_PIDS[@]}"; do
-        kill $pid 2>/dev/null
-        wait $pid 2>/dev/null
-    done
-    STRESS_PIDS=()
-    STRESS_TYPE=""
-    # Clean temp files
+    for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; wait $p 2>/dev/null; done
+    STRESS_PIDS=(); STRESS_TYPE=""
     rm -f /tmp/macstress_mem_* /tmp/macstress_disk_* 2>/dev/null
 }
-
 cleanup() {
     stop_stress
-    tput cnorm 2>/dev/null
-    echo ""; echo -e "  ${G}✅ Done. Goodbye!${N}"; echo ""
+    [[ -f "$PM_PID_FILE" ]] && kill $(cat "$PM_PID_FILE") 2>/dev/null
+    sudo pkill -9 powermetrics 2>/dev/null
+    rm -f "$PM_DATA" "${PM_DATA}.tmp" "$PM_PID_FILE" 2>/dev/null
+    tput cnorm 2>/dev/null; echo ""; echo -e "  ${G}✅ Bye!${N}"; echo ""
     exit 0
 }
 trap cleanup EXIT INT TERM
 
-# ── CPU Stress: saturate all cores ────────────────────────
 stress_cpu() {
-    local dur=${1:-60}
-    stop_stress
-    STRESS_TYPE="CPU"; STRESS_DURATION=$dur; STRESS_START=$(date +%s)
-    echo -e "\n  ${R}🔥 CPU Stress: $CORES потоків на ${dur}с${N}"
-    for ((i=0; i<CORES; i++)); do
-        (while true; do :; done) &
-        STRESS_PIDS+=($!)
-    done
-    # Auto-stop timer
-    (sleep $dur; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done) &
-    STRESS_PIDS+=($!)
+    local d=${1:-120}; stop_stress; STRESS_TYPE="CPU"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
+    for ((i=0;i<CORES;i++)); do (while :; do :; done) &; STRESS_PIDS+=($!); done
+    (sleep $d; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done) &; STRESS_PIDS+=($!)
 }
-
-# ── Memory Stress: allocate RAM in chunks ─────────────────
 stress_mem() {
-    local mb=${1:-1024}
-    local dur=${2:-60}
-    stop_stress
-    STRESS_TYPE="RAM ${mb}MB"; STRESS_DURATION=$dur; STRESS_START=$(date +%s)
-    echo -e "\n  ${R}🔥 Memory Stress: ${mb} MB на ${dur}с${N}"
-    (
-        # Allocate memory by creating large files in RAM (tmpfs-like via /tmp)
-        local chunk=64  # 64MB chunks
-        local count=$((mb / chunk))
-        for ((i=0; i<count; i++)); do
-            dd if=/dev/urandom of=/tmp/macstress_mem_$i bs=1m count=$chunk 2>/dev/null &
-        done
-        wait
-        # Hold memory by reading files
-        while true; do
-            for ((i=0; i<count; i++)); do
-                cat /tmp/macstress_mem_$i > /dev/null 2>/dev/null
-            done
-            sleep 1
-        done
-    ) &
-    STRESS_PIDS+=($!)
-    (sleep $dur; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_mem_* 2>/dev/null) &
-    STRESS_PIDS+=($!)
+    local mb=${1:-1024} d=${2:-120}; stop_stress; STRESS_TYPE="RAM"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
+    (c=$((mb/64)); for ((i=0;i<c;i++)); do dd if=/dev/urandom of=/tmp/macstress_mem_$i bs=1m count=64 2>/dev/null &; done; wait
+     while :; do for ((i=0;i<c;i++)); do cat /tmp/macstress_mem_$i >/dev/null 2>/dev/null; done; sleep 1; done) &; STRESS_PIDS+=($!)
+    (sleep $d; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_mem_*) &; STRESS_PIDS+=($!)
 }
-
-# ── Disk Stress: sequential read/write ────────────────────
 stress_disk() {
-    local dur=${1:-60}
-    stop_stress
-    STRESS_TYPE="DISK"; STRESS_DURATION=$dur; STRESS_START=$(date +%s)
-    echo -e "\n  ${R}🔥 Disk Stress: read/write на ${dur}с${N}"
-    (
-        while true; do
-            dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=256 2>/dev/null
-            dd if=/tmp/macstress_disk_w of=/dev/null bs=1m 2>/dev/null
-            rm -f /tmp/macstress_disk_w 2>/dev/null
-        done
-    ) &
-    STRESS_PIDS+=($!)
-    (sleep $dur; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_disk_* 2>/dev/null) &
-    STRESS_PIDS+=($!)
+    local d=${1:-120}; stop_stress; STRESS_TYPE="DISK"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
+    (while :; do dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=256 2>/dev/null; dd if=/tmp/macstress_disk_w of=/dev/null bs=1m 2>/dev/null; rm -f /tmp/macstress_disk_w; done) &; STRESS_PIDS+=($!)
+    (sleep $d; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_disk_*) &; STRESS_PIDS+=($!)
 }
-
-# ── All Stress: CPU + RAM + Disk ──────────────────────────
 stress_all() {
-    local dur=${1:-120}
-    stop_stress
-    STRESS_TYPE="ALL"; STRESS_DURATION=$dur; STRESS_START=$(date +%s)
-    echo -e "\n  ${R}🔥 FULL STRESS: CPU + RAM + Disk на ${dur}с${N}"
-
-    # CPU
-    for ((i=0; i<CORES; i++)); do
-        (while true; do :; done) &
-        STRESS_PIDS+=($!)
-    done
-
-    # RAM (512MB)
-    (
-        for ((i=0; i<8; i++)); do
-            dd if=/dev/urandom of=/tmp/macstress_mem_$i bs=1m count=64 2>/dev/null
-        done
-        while true; do
-            for ((i=0; i<8; i++)); do cat /tmp/macstress_mem_$i > /dev/null 2>/dev/null; done
-            sleep 1
-        done
-    ) &
-    STRESS_PIDS+=($!)
-
-    # Disk
-    (while true; do
-        dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=128 2>/dev/null
-        dd if=/tmp/macstress_disk_w of=/dev/null bs=1m 2>/dev/null
-        rm -f /tmp/macstress_disk_w 2>/dev/null
-    done) &
-    STRESS_PIDS+=($!)
-
-    # Timer
-    (sleep $dur; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done; rm -f /tmp/macstress_* 2>/dev/null) &
-    STRESS_PIDS+=($!)
+    local d=${1:-180}; stop_stress; STRESS_TYPE="ALL"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
+    for ((i=0;i<CORES;i++)); do (while :; do :; done) &; STRESS_PIDS+=($!); done
+    (for ((i=0;i<8;i++)); do dd if=/dev/urandom of=/tmp/macstress_mem_$i bs=1m count=64 2>/dev/null; done
+     while :; do for ((i=0;i<8;i++)); do cat /tmp/macstress_mem_$i >/dev/null 2>/dev/null; done; sleep 1; done) &; STRESS_PIDS+=($!)
+    (while :; do dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=128 2>/dev/null; rm -f /tmp/macstress_disk_w; done) &; STRESS_PIDS+=($!)
+    (sleep $d; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done; rm -f /tmp/macstress_*) &; STRESS_PIDS+=($!)
 }
 
-# ── Parse vm_stat ─────────────────────────────────────────
 parse_vm() {
-    local data=$(vm_stat 2>/dev/null)
-    local ps=16384
+    local d=$(vm_stat 2>/dev/null) ps=16384
     [[ "$ARCH" == "x86_64" ]] && ps=4096
-    local active=$(echo "$data" | awk '/Pages active/ {gsub(/\./,"",$NF); print $NF}')
-    local wired=$(echo "$data" | awk '/Pages wired/ {gsub(/\./,"",$NF); print $NF}')
-    local compressed=$(echo "$data" | awk '/occupied by compressor/ {gsub(/\./,"",$NF); print $NF}')
-    active=${active:-0}; wired=${wired:-0}; compressed=${compressed:-0}
-    local used_bytes=$(( (active + wired + compressed) * ps ))
-    echo "scale=1; $used_bytes / 1073741824" | bc 2>/dev/null
+    local a=$(echo "$d"|awk '/Pages active/{gsub(/\./,"",$NF);print $NF}')
+    local w=$(echo "$d"|awk '/Pages wired/{gsub(/\./,"",$NF);print $NF}')
+    local c=$(echo "$d"|awk '/occupied by compressor/{gsub(/\./,"",$NF);print $NF}')
+    echo "scale=1; $(( (${a:-0} + ${w:-0} + ${c:-0}) * ps )) / 1073741824" | bc 2>/dev/null
 }
 
-# ── Menu ──────────────────────────────────────────────────
-echo ""
-echo -e "  ${BOLD}Стрес-тести:${N}"
-echo -e "    ${Y}1${N} CPU (всі ядра)   ${Y}2${N} RAM (1GB)   ${Y}3${N} Disk (r/w)"
-echo -e "    ${Y}4${N} ALL (CPU+RAM+Disk)              ${Y}x${N} Зупинити"
-echo -e "    ${Y}q${N} Вихід"
-echo -e "  ${D}──────────────────────────────────────────────${N}"
+make_bar() {
+    local pct=$1 max=30 len=$((pct * max / 100))
+    [[ $len -lt 0 ]] && len=0; [[ $len -gt $max ]] && len=$max
+    local bar=""; for ((i=0;i<len;i++)); do bar+="█"; done
+    for ((i=len;i<max;i++)); do bar+="░"; done
+    echo "$bar"
+}
+
+# ── Draw static header ───────────────────────────────────
+clear
+tput civis 2>/dev/null
+
+# Line 0: title
+echo -e "  ${Y}⚡${N} ${BOLD}MacStress Lite${N}"
+# Line 1: separator
+echo -e "  ${D}══════════════════════════════════════════════════${N}"
+# Line 2: model
+echo -e "  ${C}Модель${N}   $MODEL"
+# Line 3: CPU
+echo -e "  ${C}CPU${N}      $CPU_BRAND"
+# Line 4: specs
+echo -e "  ${C}Ядра${N}  $CORES  ·  ${C}RAM${N}  ${RAM_GB} GB  ·  ${C}macOS${N}  $OS_VER ($ARCH)"
+# Line 5: separator
+echo -e "  ${D}══════════════════════════════════════════════════${N}"
+# Line 6: controls header
+echo -e "  ${BOLD}Керування:${N}"
+# Line 7: controls
+echo -e "  ${Y}[1]${N} Стрес CPU  ${Y}[2]${N} Стрес RAM  ${Y}[3]${N} Стрес Диска"
+# Line 8: controls cont
+echo -e "  ${Y}[4]${N} ВСЕ разом  ${Y}[x]${N} Зупинити   ${Y}[q]${N} Вийти"
+# Line 9: separator
+echo -e "  ${D}══════════════════════════════════════════════════${N}"
+# Lines 10-16: live data (7 lines, updated in-place)
+echo ""; echo ""; echo ""; echo ""; echo ""; echo ""; echo ""
+
+LIVE_START=10  # line where live data begins
+
+# ── Ask for powermetrics password ─────────────────────────
+tput cnorm 2>/dev/null
+start_powermetrics
+tput civis 2>/dev/null
 
 # ── Main Loop ─────────────────────────────────────────────
-tput civis 2>/dev/null
-LINES_UP=6
-
 while true; do
-    # CPU
     CPU_RAW=$(ps -A -o %cpu | awk '{s+=$1} END {printf "%.1f", s}')
-    CPU_PCT=$(echo "scale=1; $CPU_RAW / $CORES" | bc 2>/dev/null || echo "$CPU_RAW")
+    CPU_PCT=$(echo "scale=1; $CPU_RAW / $CORES" | bc 2>/dev/null || echo "0")
     CPU_INT=${CPU_PCT%.*}; [[ ${CPU_INT:-0} -gt 100 ]] && CPU_PCT="100.0" && CPU_INT=100
 
-    # RAM
-    MEM_USED=$(parse_vm)
+    MEM_USED=$(parse_vm); MEM_USED=${MEM_USED:-0}
     MEM_PCT=$(echo "scale=1; $MEM_USED * 100 / $RAM_GB" | bc 2>/dev/null || echo "0")
-    MEM_INT=${MEM_PCT%.*}
+    MEM_INT=${MEM_PCT%.*}; MEM_INT=${MEM_INT:-0}
 
-    # Swap
-    SWAP_USED=$(sysctl vm.swapusage 2>/dev/null | grep -oE 'used = [0-9.]+M' | grep -oE '[0-9.]+')
-    SWAP_USED=${SWAP_USED:-0}
-
-    # Load
+    SWAP=$(sysctl vm.swapusage 2>/dev/null | grep -oE 'used = [0-9.]+M' | grep -oE '[0-9.]+')
     LOAD=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
-
-    # Disk I/O
-    DISK_IO=$(iostat -d -c 2 2>/dev/null | tail -1 | awk '{printf "R:%.1f W:%.1f MB/s", $2/1024, $3/1024}')
-
-    # Battery
     BATT=$(pmset -g batt 2>/dev/null | grep -oE '[0-9]+%' | head -1)
 
-    # Stress timer
-    STRESS_INFO=""
+    CT=$(get_pm cpu_temp); GT=$(get_pm gpu_temp)
+    CP=$(get_pm cpu_power); GP=$(get_pm gpu_power)
+
+    # Color for CPU/MEM
+    CC=$G; [[ ${CPU_INT:-0} -gt 50 ]] && CC=$Y; [[ ${CPU_INT:-0} -gt 80 ]] && CC=$R
+    MC=$G; [[ ${MEM_INT:-0} -gt 60 ]] && MC=$Y; [[ ${MEM_INT:-0} -gt 85 ]] && MC=$R
+
+    CPU_BAR=$(make_bar ${CPU_INT:-0})
+    MEM_BAR=$(make_bar ${MEM_INT:-0})
+
+    # Stress info
+    SI=""
     if [[ -n "$STRESS_TYPE" && ${#STRESS_PIDS[@]} -gt 0 ]]; then
-        local_now=$(date +%s)
-        elapsed=$((local_now - STRESS_START))
-        remain=$((STRESS_DURATION - elapsed))
-        if [[ $remain -le 0 ]]; then
-            stop_stress
-        else
-            STRESS_INFO="${R}🔥 ${STRESS_TYPE} — ${remain}с${N}"
-        fi
+        now=$(date +%s); rem=$((STRESS_DUR - (now - STRESS_T0)))
+        if [[ $rem -le 0 ]]; then stop_stress
+        else SI="  ${R}🔥 СТРЕС: ${STRESS_TYPE} — ${rem}с залишилось${N}"; fi
     fi
 
-    # Bars
-    CPU_BAR_LEN=$((CPU_INT * 40 / 100)); [[ $CPU_BAR_LEN -lt 1 ]] && CPU_BAR_LEN=1
-    MEM_BAR_LEN=$((MEM_INT * 40 / 100)); [[ $MEM_BAR_LEN -lt 1 ]] && MEM_BAR_LEN=1
-    CPU_BAR=$(printf '█%.0s' $(seq 1 $CPU_BAR_LEN)); CPU_COLOR=$G; [[ $CPU_INT -gt 50 ]] && CPU_COLOR=$Y; [[ $CPU_INT -gt 80 ]] && CPU_COLOR=$R
-    MEM_BAR=$(printf '█%.0s' $(seq 1 $MEM_BAR_LEN)); MEM_COLOR=$G; [[ $MEM_INT -gt 60 ]] && MEM_COLOR=$Y; [[ $MEM_INT -gt 85 ]] && MEM_COLOR=$R
+    # Temp+Power line
+    TP=""
+    [[ -n "$CT" ]] && TP="${TP}CPU ${CT}°C  "
+    [[ -n "$GT" ]] && TP="${TP}GPU ${GT}°C  "
+    [[ -n "$CP" ]] && TP="${TP}⚡${CP}W  "
+    [[ -n "$GP" ]] && TP="${TP}GPU⚡${GP}W  "
+    [[ -z "$TP" ]] && TP="⏳ чекаю дані..."
 
-    # Render
-    echo -ne "\033[${LINES_UP}A"
-    printf "  ${W}CPU${N}  %5s%%  ${CPU_COLOR}%-40s${N}\n" "$CPU_PCT" "$CPU_BAR"
-    printf "  ${W}RAM${N}  %5s%%  ${MEM_COLOR}%-40s${N}  ${D}${MEM_USED}/${RAM_GB} GB${N}\n" "$MEM_PCT" "$MEM_BAR"
-    printf "  ${W}Swap${N} %5s MB  ${D}Load: ${LOAD}${N}                              \n" "$SWAP_USED"
-    printf "  ${W}Disk${N} %-30s ${D}Batt: ${BATT:-n/a}${N}       \n" "$DISK_IO"
-    printf "  %-60s\n" "$STRESS_INFO"
-    printf "  ${D}──────────────────────────────────────────────${N}\n"
+    # Position cursor at live data area and overwrite
+    tput cup $LIVE_START 0 2>/dev/null
+    printf "  ${W}CPU${N}  %5s%%  ${CC}%s${N}\n" "$CPU_PCT" "$CPU_BAR"
+    printf "  ${W}RAM${N}  %5s%%  ${MC}%s${N}  ${D}(${MEM_USED}/${RAM_GB} GB)${N}\n" "$MEM_PCT" "$MEM_BAR"
+    printf "  ${W}Swap${N}  %-6s MB    ${W}Load${N}  %-8s  ${W}Batt${N}  %-5s\n" "${SWAP:-0}" "${LOAD:-?}" "${BATT:-n/a}"
+    printf "  ${W}🌡${N}  %-50s\n" "$TP"
+    printf "%-62s\n" "$SI"
+    printf "  ${D}──────────────────────────────────────────────────${N}\n"
+    printf "                                                           \n"
 
     read -t 2 -n 1 key 2>/dev/null
     case "$key" in
-        1) tput cnorm; stress_cpu 120; tput civis ;;
-        2) tput cnorm; stress_mem 1024 120; tput civis ;;
-        3) tput cnorm; stress_disk 120; tput civis ;;
-        4) tput cnorm; stress_all 180; tput civis ;;
-        x|X) stop_stress; echo -e "\n  ${G}✅ Зупинено${N}" ;;
+        1) stress_cpu 120 ;;
+        2) stress_mem 1024 120 ;;
+        3) stress_disk 120 ;;
+        4) stress_all 180 ;;
+        x|X) stop_stress ;;
         q|Q) exit 0 ;;
     esac
 done
