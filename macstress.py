@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -256,26 +256,17 @@ class MetricsCollector:
             return dict(self.data)
 
     def _collect_loop(self):
+        cores = self.sys_info.get("cores", 1) or 1
         while not self._stop.is_set():
             try:
-                # CPU: use top -l 2 for interval-based measurement (accurate during stress)
-                # -l 2 = two log samples, -n 0 = no processes, -s 1 = 1s interval
+                # CPU: fast ps-based measurement, normalized by core count
                 cpu_total = 0.0
                 try:
-                    top_out = subprocess.getoutput(
-                        "top -l 2 -n 0 -s 1 2>/dev/null | grep 'CPU usage' | tail -1"
+                    cpu_raw = subprocess.getoutput(
+                        "ps -A -o %cpu | awk 'NR>1{s+=$1} END {printf \"%.1f\", s}'"
                     )
-                    # Format: "CPU usage: 12.34% user, 5.67% sys, 81.99% idle"
-                    m = re.search(r'(\d+\.\d+)%\s+idle', top_out)
-                    if m:
-                        cpu_total = round(100.0 - float(m.group(1)), 1)
-                    else:
-                        # Fallback: sum user + sys
-                        mu = re.search(r'(\d+\.\d+)%\s+user', top_out)
-                        ms = re.search(r'(\d+\.\d+)%\s+sys', top_out)
-                        if mu and ms:
-                            cpu_total = round(float(mu.group(1)) + float(ms.group(1)), 1)
-                except Exception:
+                    cpu_total = min(round(float(cpu_raw.strip()) / cores, 1), 100.0)
+                except (ValueError, ZeroDivisionError):
                     pass
 
                 vm = subprocess.getoutput("vm_stat")
@@ -298,8 +289,8 @@ class MetricsCollector:
 
                 disk_r = disk_w = 0.0
                 try:
-                    # iostat -d -c 2 1: 2 samples, 1s interval — second line is the delta
-                    io = subprocess.getoutput("iostat -d -c 2 1 2>/dev/null | tail -1").split()
+                    # iostat -d -c 2: 2 samples — second line is the interval delta
+                    io = subprocess.getoutput("iostat -d -c 2 2>/dev/null | tail -1").split()
                     if len(io) >= 3:
                         disk_r, disk_w = float(io[1]) / 1024, float(io[2]) / 1024
                 except Exception: pass
@@ -315,8 +306,7 @@ class MetricsCollector:
                     })
                     self._history.append(dict(self.data))
             except Exception: pass
-            # top -l 2 already takes ~1s, so minimal extra sleep needed
-            self._stop.wait(0.1)
+            self._stop.wait(2.0)
 
     def _sensor_loop(self, binary):
         try:
