@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.3.3"
+VERSION = "1.4.0"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -670,18 +670,26 @@ else if(on==0){endT=0;if(cdi){clearInterval(cdi);cdi=null;}let cb=$('cdBox');if(
 
 function checkUpd(){
  let b=document.querySelector('#updStatus button');
- b.disabled=true;b.textContent='Checking...';
+ b.disabled=true;b.textContent='Перевірка...';
  fetch('/api/check_update').then(r=>r.json()).then(d=>{
   let s=document.getElementById('updStatus');
   if(d.has_update){
-   s.innerHTML='<div style="color:#2ed573;margin-bottom:5px">🆕 New version: '+d.latest+'</div><a href="'+d.url+'" target="_blank" class="b go" style="display:block;text-align:center;text-decoration:none;font-size:11px;padding:4px">Download</a>';
+   s.innerHTML='<div style="color:#2ed573;margin-bottom:5px">🆕 Нова версія: v'+d.latest+'</div><button class="b go" style="display:block;width:100%;text-align:center;font-size:11px;padding:6px;background:#2ed573;color:#000;border:none;border-radius:6px;cursor:pointer" onclick="doUpdate(this)">⬇ Оновити</button>';
   } else {
-   b.textContent='✅ Up to date (v'+d.custom_ver+')';
+   b.textContent='✅ Актуальна (v'+d.current+')';
    b.style.background='rgba(46,213,115,0.1)';
    b.style.color='#2ed573';
    setTimeout(()=>{b.disabled=false;b.textContent='🔄 Check for Updates';b.style.background='#333';b.style.color='#fff'}, 5000);
   }
  });
+}
+function doUpdate(btn){
+ btn.disabled=true;btn.textContent='⏳ Оновлення...';
+ fetch('/api/do_update',{method:'POST'}).then(r=>r.json()).then(d=>{
+  if(d.ok){btn.textContent='✅ Перезавантаження...';btn.style.background='#2ed573';
+   setTimeout(()=>{location.reload()},3000);
+  } else {btn.textContent='❌ '+d.error;btn.style.background='#c0392b';}
+ }).catch(()=>{btn.textContent='❌ Помилка мережі';btn.style.background='#c0392b';});
 }
 
 function diskBench(){
@@ -888,6 +896,14 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=_run_disk_benchmark, daemon=True).start()
                 self._ok("application/json", json.dumps({"ok": True, "status": "started"}).encode())
+        elif self.path == "/api/do_update":
+            try:
+                ok, msg = self_update()
+                self._ok("application/json", json.dumps({"ok": ok, "error": msg if not ok else None}).encode())
+                if ok:
+                    threading.Thread(target=lambda: (time.sleep(1), os.execv(sys.executable, [sys.executable] + sys.argv)), daemon=True).start()
+            except Exception as e:
+                self._ok("application/json", json.dumps({"ok": False, "error": str(e)}).encode())
         else:
             self.send_error(404)
 
@@ -979,7 +995,7 @@ def run_native_app(port):
             
             if has_update:
                 msg = f"Нова версія доступна: v{latest_ver}"
-                info = f"Поточна: v{VERSION}. Відкрийте GitHub для завантаження."
+                info = f"Поточна: v{VERSION}. Натисніть 'Оновити' для автоматичного оновлення."
             else:
                 msg = "Ви використовуєте останню версію."
                 info = f"MacStress v{VERSION}"
@@ -989,11 +1005,22 @@ def run_native_app(port):
             alert.setInformativeText_(info)
             alert.addButtonWithTitle_("OK")
             if has_update:
-                alert.addButtonWithTitle_("Open GitHub")
+                alert.addButtonWithTitle_("Оновити")
             
             resp = alert.runModal()
-            if has_update and resp == 1001: # Second button
-                 subprocess.run(["open", f"https://github.com/{GITHUB_REPO}/releases/latest"])
+            if has_update and resp == 1001:
+                ok, err = self_update()
+                if ok:
+                    a2 = NSAlert.alloc().init()
+                    a2.setMessageText_("Оновлено! Перезапуск...")
+                    a2.addButtonWithTitle_("OK")
+                    a2.runModal()
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                else:
+                    a2 = NSAlert.alloc().init()
+                    a2.setMessageText_(f"Помилка: {err}")
+                    a2.addButtonWithTitle_("OK")
+                    a2.runModal()
 
         def updateMenuBar_(self, timer):
             """Update menu bar with live CPU / RAM / Temp / Power stats."""
@@ -1207,6 +1234,45 @@ def check_for_updates(silent=False):
         if not silent:
             print("  ⚠️  Не вдалося перевірити оновлення")
         return None, VERSION
+
+def self_update():
+    """Download latest macstress.py from GitHub and replace local file.
+    Returns (success: bool, message: str)."""
+    try:
+        import urllib.request
+        # Get default branch raw URL
+        raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/macstress.py"
+        req = urllib.request.Request(raw_url, headers={"User-Agent": "MacStress"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            new_code = r.read()
+        
+        # Verify it's valid Python
+        import ast
+        ast.parse(new_code)
+        
+        # Extract version from downloaded file to confirm it's newer
+        m = re.search(rb'VERSION\s*=\s*["\']([\d.]+)["\']', new_code)
+        if not m:
+            return False, "Не вдалося визначити версію нового файлу"
+        new_ver = m.group(1).decode()
+        if _ver_tuple(new_ver) <= _ver_tuple(VERSION):
+            return False, f"Завантажена версія ({new_ver}) не новіша за поточну ({VERSION})"
+        
+        # Atomic replace: write to temp, then rename
+        script_path = os.path.abspath(__file__)
+        tmp_path = script_path + ".tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(new_code)
+        os.replace(tmp_path, script_path)
+        
+        print(f"  ✅ Оновлено: v{VERSION} → v{new_ver}")
+        return True, new_ver
+    except urllib.request.URLError as e:
+        return False, f"Помилка мережі: {e}"
+    except SyntaxError:
+        return False, "Завантажений файл містить синтаксичні помилки"
+    except Exception as e:
+        return False, str(e)
 
 
 # ═══════════════════════════ App Launcher ═══════════════════════════════
