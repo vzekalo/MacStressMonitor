@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -1370,28 +1370,44 @@ fi
 </plist>
 """)
 
-    # Force icon cache refresh — multi-step to defeat macOS caching:
+    # Force icon cache refresh — comprehensive nuke to defeat macOS caching:
     lsreg = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
-    # 1. Unregister the app first (clears old icon association)
+    # 1. Unregister the app first
     subprocess.run([lsreg, "-u", str(app_path)], capture_output=True)
 
-    # 2. Clear icon services cache for this app
-    icon_cache = Path.home() / "Library" / "Caches" / "com.apple.iconservices.store"
-    if icon_cache.exists():
-        shutil.rmtree(str(icon_cache), ignore_errors=True)
+    # 2. Clear ALL icon caches (user + system + /var/folders/)
+    caches_to_clear = [
+        Path.home() / "Library" / "Caches" / "com.apple.iconservices.store",
+        Path("/Library/Caches/com.apple.iconservices.store"),
+    ]
+    for cache_dir in caches_to_clear:
+        if cache_dir.exists():
+            shutil.rmtree(str(cache_dir), ignore_errors=True)
 
-    # 3. Kill iconservicesd so it rebuilds the cache from scratch
+    # 3. Clear /var/folders icon caches (most aggressive — where macOS actually stores them)
+    subprocess.run(
+        "sudo find /private/var/folders/ "
+        "\\( -name com.apple.dock.iconcache -or -name com.apple.iconservices \\) "
+        "-exec rm -rfv {} + 2>/dev/null",
+        shell=True, capture_output=True
+    )
+
+    # 4. Kill iconservicesd so it rebuilds from scratch
     subprocess.run(["killall", "iconservicesd"], capture_output=True)
 
-    # 4. Re-register the app with updated icon
+    # 5. Re-register the app with updated icon
     subprocess.run([lsreg, "-f", str(app_path)], capture_output=True)
 
-    # 5. Touch to update mtime (some Finder code checks this)
+    # 6. Touch bundle and plist to update mtime
     subprocess.run(["touch", str(app_path)], capture_output=True)
     subprocess.run(["touch", str(app_path / "Contents" / "Info.plist")], capture_output=True)
 
-    # 6. Restart Dock + Finder to pick up new icon
+    # 7. Reset Launchpad database + restart Dock and Finder
+    subprocess.run(
+        ["defaults", "write", "com.apple.dock", "ResetLaunchPad", "-bool", "true"],
+        capture_output=True
+    )
     subprocess.run(["killall", "Dock"], capture_output=True)
     subprocess.run(["killall", "Finder"], capture_output=True)
 
