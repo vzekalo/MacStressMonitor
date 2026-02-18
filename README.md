@@ -55,10 +55,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/mai
 ```
 
 The installer automatically:
-1. **Finds or installs Python 3** — checks system → tries CLT → downloads `.pkg` from python.org
-2. **Bootstraps pip** — uses `ensurepip` or downloads from GitHub
-3. **Installs PyObjC** — for native menu bar (optional)
-4. **Falls back gracefully** — if PyObjC fails, runs web-only dashboard in browser
+1. **Downloads portable Python** from GitHub (`python-build-standalone`) — no `.pkg`, no `installer`, no admin
+2. **Extracts to `~/.macstress/python/`** — fully self-contained, no system changes
+3. **Bootstraps pip** — from `ensurepip` or GitHub
+4. **Tries PyObjC** — for native menu bar; if it fails → web-only dashboard in browser
+5. **Creates `~/.macstress/launch.sh`** — for easy re-launch
 
 ### Standalone App (Apple Silicon only):
 
