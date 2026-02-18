@@ -190,7 +190,7 @@ def memory_stress_worker(stop_event, target_gb):
             for blk in blocks:
                 if stop_event.is_set(): break
                 blk.seek(0); blk.write(os.urandom(4096))
-                time.sleep(0.05)
+                time.sleep(0.2)  # less aggressive — reduces I/O contention
     finally:
         for blk in blocks:
             try: blk.close()
@@ -256,16 +256,27 @@ class MetricsCollector:
             return dict(self.data)
 
     def _collect_loop(self):
-        cores = self.sys_info["cores"]
         while not self._stop.is_set():
             try:
-                cpu_raw = subprocess.getoutput(
-                    "ps -A -o %cpu | awk '{s+=$1} END {printf \"%.1f\", s}'"
-                )
+                # CPU: use top -l 2 for interval-based measurement (accurate during stress)
+                # -l 2 = two log samples, -n 0 = no processes, -s 1 = 1s interval
+                cpu_total = 0.0
                 try:
-                    cpu_total = min(round(float(cpu_raw.strip()) / cores, 1), 100.0)
-                except (ValueError, ZeroDivisionError):
-                    cpu_total = 0.0
+                    top_out = subprocess.getoutput(
+                        "top -l 2 -n 0 -s 1 2>/dev/null | grep 'CPU usage' | tail -1"
+                    )
+                    # Format: "CPU usage: 12.34% user, 5.67% sys, 81.99% idle"
+                    m = re.search(r'(\d+\.\d+)%\s+idle', top_out)
+                    if m:
+                        cpu_total = round(100.0 - float(m.group(1)), 1)
+                    else:
+                        # Fallback: sum user + sys
+                        mu = re.search(r'(\d+\.\d+)%\s+user', top_out)
+                        ms = re.search(r'(\d+\.\d+)%\s+sys', top_out)
+                        if mu and ms:
+                            cpu_total = round(float(mu.group(1)) + float(ms.group(1)), 1)
+                except Exception:
+                    pass
 
                 vm = subprocess.getoutput("vm_stat")
                 ps = 16384 if self.sys_info["arch"] == "apple_silicon" else 4096
@@ -287,14 +298,16 @@ class MetricsCollector:
 
                 disk_r = disk_w = 0.0
                 try:
-                    io = subprocess.getoutput("iostat -d -c 2 2>/dev/null | tail -1").split()
+                    # iostat -d -c 2 1: 2 samples, 1s interval — second line is the delta
+                    io = subprocess.getoutput("iostat -d -c 2 1 2>/dev/null | tail -1").split()
                     if len(io) >= 3:
                         disk_r, disk_w = float(io[1]) / 1024, float(io[2]) / 1024
                 except Exception: pass
 
                 with self._lock:
                     self.data.update({
-                        "cpu_usage": cpu_total, "mem_used_pct": round(mem_pct, 1),
+                        "cpu_usage": min(cpu_total, 100.0),
+                        "mem_used_pct": round(mem_pct, 1),
                         "mem_used_gb": round(used_gb, 1), "swap_used_gb": round(swap_used, 2),
                         "swap_total_gb": round(swap_total, 2),
                         "disk_read_mb": round(disk_r, 2), "disk_write_mb": round(disk_w, 2),
@@ -302,7 +315,8 @@ class MetricsCollector:
                     })
                     self._history.append(dict(self.data))
             except Exception: pass
-            time.sleep(0.5)
+            # top -l 2 already takes ~1s, so minimal extra sleep needed
+            self._stop.wait(0.1)
 
     def _sensor_loop(self, binary):
         try:
@@ -626,8 +640,12 @@ let allBtn=running
  :'<button class="b go" onclick="tA(1)">&#9654; START ALL</button>';
 let timer='<div class="timer"><label>Duration:</label><select id="dur"><option value="60">1 min</option><option value="300">5 min</option><option value="600" selected>10 min</option><option value="1800">30 min</option><option value="3600">1 hour</option><option value="0">&#8734; No limit</option></select></div>';
 let cd='<div class="cd'+(endT>0?' vis':'')+'" id="cdBox">&#9200; <span id="cdT"></span></div>';
-let bench='<button class="b bench" onclick="diskBench()" id="benchBtn">&#128300; BENCHMARK</button>';
-$('ctrl').innerHTML=tBtns+timer+allBtn+cd;
+let hint='<div style="font-size:11px;color:#555;margin-top:6px;text-align:center">'
+ +'<span style="color:#444">&#128161;</span> '
+ +'Натисніть на кнопку нижче щоб запустити/зупинити окремий тест '
+ +'&nbsp;·&nbsp; <b style="color:#2ed573">START ALL</b> — запустити всі'
+ +'</div>';
+$('ctrl').innerHTML=tBtns+timer+allBtn+cd+hint;
 ctrlInit=true;
 }
 function uC(a){
@@ -829,7 +847,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_event(json.dumps({
                         "metrics": _mc.get_snapshot(), "active": _sm.get_active(), "sys_info": _si
                     }))
-                    time.sleep(0.5)
+                    time.sleep(1.0)
             except (BrokenPipeError, ConnectionResetError, OSError): pass
         elif self.path == "/api/status":
             self._ok("application/json", json.dumps({"metrics": _mc.get_snapshot(), "active": _sm.get_active(), "sys_info": _si}).encode())
