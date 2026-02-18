@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -642,7 +642,7 @@ let timer='<div class="timer"><label>Duration:</label><select id="dur"><option v
 let cd='<div class="cd'+(endT>0?' vis':'')+'" id="cdBox">&#9200; <span id="cdT"></span></div>';
 let hint='<div style="font-size:11px;color:#555;margin-top:6px;text-align:center">'
  +'<span style="color:#444">&#128161;</span> '
- +'Натисніть на кнопку нижче щоб запустити/зупинити окремий тест '
+ +'Натисніть кнопку щоб увімкнути/вимкнути окремий тест'
  +'&nbsp;·&nbsp; <b style="color:#2ed573">START ALL</b> — запустити всі'
  +'</div>';
 $('ctrl').innerHTML=tBtns+timer+allBtn+cd+hint;
