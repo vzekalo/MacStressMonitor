@@ -6,22 +6,23 @@ echo ""
 echo "  ⚡  MacStress — Native macOS Stress Test & Monitor"
 echo ""
 
-# ── 1. Check if python3 ACTUALLY works (not just the macOS stub) ──
-if ! python3 --version &>/dev/null; then
-    echo "  📦  Python 3 не знайдено або потребує Xcode Command Line Tools."
+# ── 1. Check if REAL python3 exists (not the macOS stub) ──
+PY_VER="$(python3 --version 2>/dev/null)"
+if ! echo "$PY_VER" | grep -q "Python 3"; then
+    echo "  📦  Python 3 потребує Xcode Command Line Tools."
     echo ""
-    echo "  ⏳  Встановлюю Command Line Tools..."
     xcode-select --install 2>/dev/null
     echo ""
-    echo "  👉  Натисніть 'Install' в діалозі macOS."
-    echo "  👉  Після завершення (2-5 хв) запустіть ЦЮ САМУ команду ще раз:"
+    echo "  👉  Натисніть 'Install' в діалозі macOS"
+    echo "  👉  Зачекайте 2-5 хвилин"
+    echo "  👉  Потім запустіть цю команду ще раз:"
     echo ""
     echo "      bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/install.sh)"
     echo ""
     exit 0
 fi
 
-echo "  ✅  Python 3: $(python3 --version 2>&1)"
+echo "  ✅  $PY_VER"
 
 # ── 2. Ensure pip works ──────────────────────────────────
 if ! python3 -m pip --version &>/dev/null; then
@@ -32,15 +33,15 @@ if ! python3 -m pip --version &>/dev/null; then
     }
 fi
 
-# ── 3. Install PyObjC (for native menu bar + WebView) ─────
+# ── 3. Install PyObjC ────────────────────────────────────
 if ! python3 -c "import objc; from AppKit import NSApplication; import WebKit" 2>/dev/null; then
-    echo "  📦  Встановлюю PyObjC..."
+    echo "  📦  Встановлюю PyObjC (30-60 сек)..."
     python3 -m pip install --user --quiet pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-WebKit 2>/dev/null \
     || python3 -m pip install --quiet --break-system-packages pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-WebKit 2>/dev/null \
     || python3 -m pip install --quiet pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-WebKit 2>/dev/null \
     || {
         echo ""
-        echo "  ❌  Не вдалось встановити PyObjC auto."
+        echo "  ❌  Не вдалось встановити PyObjC."
         echo "  💡  Спробуйте вручну:"
         echo "      python3 -m pip install pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-WebKit"
         echo ""
@@ -48,23 +49,17 @@ if ! python3 -c "import objc; from AppKit import NSApplication; import WebKit" 2
     }
     echo "  ✅  PyObjC встановлено!"
 else
-    echo "  ✅  PyObjC: вже встановлено"
+    echo "  ✅  PyObjC: OK"
 fi
 
-# ── 4. Download latest MacStress ──────────────────────────
+# ── 4. Download and run ──────────────────────────────────
 DEST="$HOME/.local/bin/macstress.py"
 mkdir -p "$(dirname "$DEST")"
 echo "  📥  Завантажую MacStress..."
 curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress.py -o "$DEST"
 
-if [ ! -f "$DEST" ]; then
-    echo "  ❌  Не вдалось завантажити. Перевірте інтернет."
-    exit 1
-fi
-
-# ── 5. Launch ─────────────────────────────────────────────
 echo ""
-echo "  🚀  Запускаю MacStress..."
+echo "  🚀  Запускаю..."
 echo "      Dashboard: http://localhost:9630"
 echo ""
 exec python3 "$DEST"
