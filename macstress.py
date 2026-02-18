@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -1376,20 +1376,29 @@ fi
     # 1. Unregister the app first
     subprocess.run([lsreg, "-u", str(app_path)], capture_output=True)
 
-    # 2. Clear ALL icon caches (user + system + /var/folders/)
+    # 2. Clear ALL icon caches (user + system)
     caches_to_clear = [
         Path.home() / "Library" / "Caches" / "com.apple.iconservices.store",
-        Path("/Library/Caches/com.apple.iconservices.store"),
     ]
+    # Get user-specific cache dir (e.g., /var/folders/xx/xxxxx/C/)
+    try:
+        user_cache = subprocess.getoutput("getconf DARWIN_USER_CACHE_DIR").strip()
+        if user_cache:
+            for name in ["com.apple.dock.iconcache", "com.apple.iconservices"]:
+                p = Path(user_cache) / name
+                if p.exists():
+                    shutil.rmtree(str(p), ignore_errors=True)
+    except Exception:
+        pass
     for cache_dir in caches_to_clear:
         if cache_dir.exists():
             shutil.rmtree(str(cache_dir), ignore_errors=True)
 
-    # 3. Clear /var/folders icon caches (most aggressive — where macOS actually stores them)
+    # 3. Also try broader /var/folders search (without sudo — user dirs are accessible)
     subprocess.run(
-        "sudo find /private/var/folders/ "
+        "find /private/var/folders/ -maxdepth 5 "
         "\\( -name com.apple.dock.iconcache -or -name com.apple.iconservices \\) "
-        "-exec rm -rfv {} + 2>/dev/null",
+        "-exec rm -rf {} + 2>/dev/null",
         shell=True, capture_output=True
     )
 

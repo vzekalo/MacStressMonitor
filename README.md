@@ -18,170 +18,110 @@ Single-file Python app with auto-update, web dashboard, native menu bar, and dis
 curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress_lite.sh" -o /tmp/ms.sh && bash /tmp/ms.sh
 ```
 
-### What it monitors:
+### Monitors:
+CPU · RAM · Swap · Load · Disk I/O · Temperature · Power · Battery
 
-| Metric | Source |
-|--------|--------|
-| CPU Usage | `ps` (real-time %, color bar) |
-| RAM Usage | `vm_stat` (active+wired+compressed) |
-| Swap | `sysctl vm.swapusage` |
-| Load Average | `sysctl vm.loadavg` |
-| Disk I/O | `iostat` (live R/W MB/s) |
-| Temperature | `powermetrics` (CPU/GPU °C) |
-| Power | `powermetrics` (CPU/GPU watts) |
-| Battery | `pmset` (charge %) |
-
-### Stress tests:
-
-| Key | Test | Duration |
-|-----|------|----------|
-| `[1]` | CPU — all cores 100% | 2 min |
-| `[2]` | RAM — allocate 512MB | 2 min |
-| `[3]` | Disk — continuous R/W 256MB | 2 min |
-| `[4]` | ALL — disk bench (4 sizes) + CPU+RAM+Disk stress | 3 min |
-| `[5]` | Disk Benchmark — Seq 1MB/256K/64K + Rnd 4K | ~30s |
-| `[x]` | Stop stress test | — |
-| `[q]` | Quit | — |
+### Controls:
+`[1]` CPU stress · `[2]` RAM · `[3]` Disk · `[4]` ALL · `[5]` Benchmark · `[u]` Update · `[i]` Install .app · `[x]` Stop · `[q]` Quit
 
 ### Requirements:
-- macOS 10.8+ (any Mac from 2010)
-- bash 3.2+ (built into macOS)
-- Admin password (one-time, for temperature/power)
+- macOS 10.8+, bash 3.2+, admin password for temp/power
 
 ---
 
 ## 🖥 MacStress Full — Native macOS App
 
-Full-featured version with web dashboard, menu bar, Metal GPU stress, drag & drop tiles, and auto-update.
-
-### Universal Install (any Mac):
-
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/install.sh)
 ```
 
-The installer automatically:
-1. **Downloads portable Python** from GitHub (`python-build-standalone`) — no `.pkg`, no `installer`, no admin
-2. **Extracts to `~/.macstress/python/`** — fully self-contained, no system changes
-3. **Bootstraps pip** — from `ensurepip` or GitHub
-4. **Tries PyObjC** — for native menu bar; if it fails → web-only dashboard in browser
-5. **Creates `~/.macstress/launch.sh`** — for easy re-launch
-6. **Creates `.app` bundle** in `~/Applications/` with custom icon
-
-### Full Features:
-- **Web Dashboard** on `http://localhost:9630` with live charts
-- **Temperature Sensors** — CPU & GPU via IOKit HID
-- **Power Consumption** — CPU/GPU/Total watts via `powermetrics`
-- **Stress Tests** — CPU, GPU (Metal), Memory, Disk I/O
-- **Disk Benchmark** — Sequential (1MB, 256K, 64K) + Random 4K read/write
-- **Menu Bar** — Live stats: `CPU 56%  RAM 84%  52°C  17.1W`
-- **Drag & Drop Tiles** — Reorder dashboard with animations
-- **Auto-Update** — one-click update from the dashboard or menu bar (see below)
+### Features:
+- **Web Dashboard** — `http://localhost:9630` with live charts, drag & drop tiles
+- **Menu Bar** — live CPU/RAM/Temp/Power: `CPU 56% RAM 84% 52°C 17.1W`
+- **Stress Tests** — CPU, GPU (Metal), Memory, Disk I/O with timer
+- **Disk Benchmark** — Sequential 1MB/256K/64K + Random 4K
+- **Temperature** — CPU & GPU via IOKit HID (Apple Silicon) or powermetrics (Intel)
+- **Power** — CPU/GPU/Total watts via powermetrics
+- **Auto-Update** — one-click from dashboard or tray (see below)
 - **Localization** — Ukrainian UI 🇺🇦
+
+### Installer does:
+1. Downloads portable Python (`python-build-standalone`)
+2. Extracts to `~/.macstress/python/` (no system changes)
+3. Installs PyObjC for native menu bar (falls back to web-only)
+4. Creates `.app` bundle in `~/Applications/` with custom icon
 
 ---
 
 ## 🔄 Auto-Update
 
-MacStress can update itself with zero manual steps.
+### Dashboard:
+**Check for Updates** → **⬇ Оновити** → downloads from release tag → validates syntax → atomic replace → restarts
 
-### From the Dashboard:
-1. Click **🔄 Check for Updates** in the System Info tile
-2. If a new version is available, click **⬇ Оновити**
-3. The app downloads the latest `macstress.py`, validates it, replaces the file, and restarts automatically
+### Tray:
+**Check for Updates...** → **Оновити** → same flow via native alert
 
-### From the Menu Bar / Tray:
-1. Click the MacStress tray icon → **Check for Updates...**
-2. If a new version is available, click **Оновити** in the alert dialog
-3. App updates and restarts
+### Lite:
+`[u]` → detects version → `[y/N]` → downloads → replaces → `exec` restart
 
-### How it works:
-1. Fetches `macstress.py` from `raw.githubusercontent.com`
-2. Validates the downloaded file has correct Python syntax (`ast.parse`)
-3. Verifies the version is actually newer than the current one
-4. Atomically replaces the local file (`os.replace`)
-5. Restarts the process (`os.execv`)
+### Technical:
+1. Fetches from `raw.githubusercontent.com/v{tag}/macstress.py` (not `main` — CDN caches for 3-5 min)
+2. `ast.parse()` validates syntax
+3. `os.replace()` atomic file swap
+4. `os.execv()` process restart
 
 ---
 
-## 🎨 Custom App Icon
+## 🎨 App Icon
 
-MacStress creates a `.app` bundle in `~/Applications/` with a custom icon.
+Rounded macOS squircle with alpha transparency. All 10 sizes (16–1024px).
 
-### Replacing the icon:
-1. Place your `.icns` file in the `icons/` directory:
-   - `icons/macstress.icns` — for the Full version
-   - `icons/macstress_lite.icns` — for the Lite version
-2. Re-run the app: `python3 macstress.py`
+**Custom icon:** replace `icons/macstress.icns` and reinstall `.app`.
 
-The app automatically:
-- Deletes the old `.app` bundle
-- Copies the new icon to `Contents/Resources/`
-- Clears macOS icon caches (`iconservicesd`, `com.apple.iconservices.store`)
-- Unregisters and re-registers with LaunchServices
-- Restarts Dock and Finder to refresh icons everywhere
-
-> **Note:** macOS aggressively caches app icons. If the icon doesn't update, try:
-> ```bash
-> sudo find /var/folders -name "com.apple.iconservices*" -exec rm -rf {} + 2>/dev/null
-> killall Dock Finder
-> ```
+Icon cache fix runs automatically: clears `/var/folders/` icon caches, kills `iconservicesd`, resets Launchpad DB, restarts Dock + Finder.
 
 ---
 
 ## 📊 Compatibility
 
-| macOS | Python Source | Mode |
-|-------|-------------|------|
-| 14+ (Sonoma) | System / CLT | Full native app |
-| 11-13 (Big Sur–Ventura) | CLT / python.org | Full native app |
-| 10.15 (Catalina) | python.org 3.12 | Full native app |
-| 10.9-10.14 (Mavericks–Mojave) | python.org 3.9 | Web-only dashboard |
-| 10.8 (Mountain Lion) | python.org 3.7 | Web-only dashboard |
-
-### Requirements:
-- macOS 10.8+ (Mountain Lion or later)
-- Internet connection (for first install and updates)
-- No App Store, no Homebrew needed
-
----
-
-## 🔐 Admin Access
-
-Temperature and power monitoring use `powermetrics`, which requires admin privileges.
-
-- **Lite version**: asks for password once at startup via `sudo`
-- **Full version**: creates a sudoers rule (one-time password dialog)
+| macOS | Mode |
+|-------|------|
+| 14+ (Sonoma) | Full native app |
+| 11-13 (Big Sur–Ventura) | Full native app |
+| 10.15 (Catalina) | Full native app |
+| 10.9-10.14 | Web-only dashboard |
+| 10.8 (Mountain Lion) | Web-only dashboard |
 
 ---
 
 ## 📝 Changelog
 
-### v1.4.1
-- Fix: app icon cache — clear `iconservicesd` + `com.apple.iconservices.store` + restart Finder
-
-### v1.4.0
-- **Auto-update**: download, replace, restart — zero user effort
-- Dashboard + tray: "⬇ Оновити" button instead of "Open GitHub"
-- All update UI localized to Ukrainian
-
-### v1.3.3
-- Fix: metrics collection loop — `top -l 2` blocked 3-5s, `iostat` hung indefinitely
-- Replaced with fast `ps -A -o %cpu` (0.04s) and fixed `iostat` arguments
-
-### v1.3.2
-- Fix: "Check for Updates" — `check_for_updates()` returns tuple, callers now unpack correctly
-- UX hint bar: inline explanation of stress test controls
-
-### v1.3.1
-- Fix: "Check for Updates" menu — added missing `NSAlert` import
-- Fix: CPU metrics — interval-based measurement via `top`
-- Fix: Disk I/O — proper 1s interval sampling
-- Disk Benchmark tile with industry-standard file sizes
-- Memory worker: reduced I/O contention
-- SSE: 1s update interval for less overhead
+| Version | Changes |
+|---------|---------|
+| **1.4.4** | Rounded macOS squircle icon with alpha + comprehensive icon cache nuke |
+| **1.4.3** | Lite: background disk I/O, auto-update, less flicker |
+| **1.4.2** | Fix auto-update CDN cache — download from release tag URL |
+| **1.4.0** | Auto-update mechanism: download, replace, restart |
+| **1.3.3** | Fix metrics: `top -l 2` blocking, `iostat` hanging |
+| **1.3.2** | Fix: Check for Updates tuple unpacking, UX hint bar |
+| **1.3.1** | NSAlert import, disk benchmark tile, SSE 1s interval |
 
 ---
+
+## 📁 Project Structure
+
+```
+MacStress/
+├── macstress.py         # Full version (1537 lines, single file)
+├── macstress_lite.sh    # Lite version (pure bash, zero deps)
+├── install.sh           # Universal installer
+├── build_app.sh         # PyInstaller .app builder
+├── setup.py             # Python package config
+├── icons/               # App icons (.icns + .png)
+└── docs/                # Project documentation
+    ├── TOC.md           # Table of contents
+    └── XREF.md          # Cross-reference / architecture
+```
 
 ## 📄 License
 
