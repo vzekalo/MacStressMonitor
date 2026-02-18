@@ -32,8 +32,8 @@ curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macs
 | `[1]` | CPU — all cores 100% | 2 min |
 | `[2]` | RAM — allocate 512MB | 2 min |
 | `[3]` | Disk — continuous R/W 256MB | 2 min |
-| `[4]` | ALL — CPU + RAM + Disk combined | 3 min |
-| `[5]` | Disk Benchmark — write+read 256MB, shows MB/s | ~10s |
+| `[4]` | ALL — disk bench (4 sizes) + CPU+RAM+Disk stress | 3 min |
+| `[5]` | Disk Benchmark — Seq 1MB/256K/64K + Rnd 4K | ~30s |
 | `[x]` | Stop stress test | — |
 | `[q]` | Quit | — |
 

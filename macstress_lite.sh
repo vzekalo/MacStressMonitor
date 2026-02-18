@@ -139,7 +139,14 @@ s_disk() {
 }
 
 s_all() {
-    d=${1:-180}; stop_s; STYPE="ALL (CPU+RAM+Disk)"; SDUR=$d; ST0=$(date +%s)
+    d=${1:-180}
+    # Run disk benchmark first
+    printf "\n  ${Y}Phase 1: Disk Benchmark${N}\n"
+    disk_bench_quiet
+
+    # Then start combined stress
+    printf "\n  ${Y}Phase 2: Full Stress Test${N}\n"
+    stop_s; STYPE="ALL (CPU+RAM+Disk)"; SDUR=$d; ST0=$(date +%s)
     i=0; while [ "$i" -lt "$CORES" ]; do
         (while :; do :; done) &
         apid $!; i=$((i+1))
@@ -199,35 +206,34 @@ run_dd_bench() {
     printf "  %-12s  Write: %4s MB/s  Read: %4s MB/s\n" "$label" "${ws:-?}" "${rs:-?}"
 }
 
-disk_bench() {
+# disk_bench_quiet: runs bench, saves results, no interactive prompt
+disk_bench_quiet() {
     bf="/tmp/macstress_bench"
-    printf "\n"
-    printf "  ${B}Disk Benchmark${N}\n"
     printf "  ${D}------------------------------------------------${N}\n"
 
-    # Sequential 1MB blocks, 512MB total
-    printf "  ${Y}Testing...${N} Sequential 1MB x 512\n"
+    printf "  ${Y}[1/4]${N} Sequential 1MB x 512...\n"
     r1=$(run_dd_bench "Seq 1MB" "1m" 512 "${bf}_seq1m" 512)
 
-    # Sequential 256KB blocks, 256MB total
-    printf "  ${Y}Testing...${N} Sequential 256K x 1024\n"
+    printf "  ${Y}[2/4]${N} Sequential 256K x 1024...\n"
     r2=$(run_dd_bench "Seq 256K" "256k" 1024 "${bf}_seq256k" 256)
 
-    # Sequential 64KB blocks, 128MB total
-    printf "  ${Y}Testing...${N} Sequential 64K x 2048\n"
+    printf "  ${Y}[3/4]${N} Sequential 64K x 2048...\n"
     r3=$(run_dd_bench "Seq 64K" "64k" 2048 "${bf}_seq64k" 128)
 
-    # Sequential 4KB blocks, 32MB total
-    printf "  ${Y}Testing...${N} Random 4K x 8192\n"
+    printf "  ${Y}[4/4]${N} Random 4K x 8192...\n"
     r4=$(run_dd_bench "Rnd 4K" "4k" 8192 "${bf}_rnd4k" 32)
 
     BENCH_LINES=$(printf "%s\n%s\n%s\n%s" "$r1" "$r2" "$r3" "$r4")
 
-    printf "\r  ${G}Done!${N}                              \n"
-    printf "\n"
-    printf "  ${B}Results:${N}\n"
+    printf "\n  ${B}Results:${N}\n"
     printf "%s\n" "$BENCH_LINES"
     printf "  ${D}------------------------------------------------${N}\n"
+}
+
+# disk_bench: interactive version (with key prompt)
+disk_bench() {
+    printf "\n  ${B}Disk Benchmark${N}\n"
+    disk_bench_quiet
     printf "  ${D}Press any key to continue...${N}\n"
     read -n 1 dummy < /dev/tty 2>/dev/null
     clear
