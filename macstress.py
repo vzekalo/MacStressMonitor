@@ -366,41 +366,46 @@ class MetricsCollector:
                 _stream_pm(["sudo"])
                 return
 
-            # Strategy 3: Try osascript GUI dialog (modern macOS)
-            ascript = (
-                'do shell script '
-                '"echo \'%%admin ALL=(root) NOPASSWD: /usr/bin/powermetrics\' '
-                '> /etc/sudoers.d/macstress_pm && chmod 0440 /etc/sudoers.d/macstress_pm" '
-                'with prompt "MacStress: дозвольте моніторинг енергії (1 раз)" '
-                'with administrator privileges'
-            )
+            # Strategy 3: Native macOS password dialog
+            # Use 'display dialog' to get password, then pipe to sudo -S
             try:
+                dialog_script = (
+                    'text returned of (display dialog '
+                    '"MacStress: введіть пароль для моніторингу температури та енергії" '
+                    'with title "MacStress" default answer "" with hidden answer '
+                    'with icon caution)'
+                )
                 proc = subprocess.run(
-                    ["osascript", "-e", ascript],
+                    ["osascript", "-e", dialog_script],
                     capture_output=True, text=True, timeout=120
                 )
-                if proc.returncode == 0:
-                    _stream_pm(["sudo"])
+                if proc.returncode == 0 and proc.stdout.strip():
+                    pw = proc.stdout.strip()
+                    self._pm_proc = subprocess.Popen(
+                        ["sudo", "-S", "powermetrics", "--samplers", samplers, "-i", "2000", "-n", "0"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                    )
+                    self._pm_proc.stdin.write(pw + "\n")
+                    self._pm_proc.stdin.flush()
+                    del pw  # Don't keep password in memory
+                    buf = []
+                    for line in self._pm_proc.stdout:
+                        if self._stop.is_set(): break
+                        buf.append(line)
+                        if line.strip() == "" and len(buf) > 5:
+                            self._parse_pm("".join(buf)); buf = []
                     return
             except Exception:
                 pass
 
-            # Strategy 4: Terminal sudo -v fallback (works on old macOS 10.8+)
-            # This shows password prompt in the terminal like macstress_lite.sh
-            print("\n  🔑 Для моніторингу температури потрібен sudo")
-            print("  (Введіть пароль адміністратора або натисніть Enter щоб пропустити)\n")
+            # Strategy 4: Terminal sudo -v fallback (old macOS without display dialog)
             try:
-                sv = subprocess.run(
-                    ["sudo", "-v"],
-                    timeout=60
-                )
+                sv = subprocess.run(["sudo", "-v"], timeout=60)
                 if sv.returncode == 0:
                     _stream_pm(["sudo"])
                     return
             except Exception:
                 pass
-
-            print("  ⚠️  powermetrics: немає доступу sudo — температура недоступна")
         except Exception as e:
             print(f"  ⚠️  powermetrics: {e}")
 
@@ -977,6 +982,13 @@ def run_native_app(port):
 
 # ═══════════════════════════ Update Check ═══════════════════════════════
 
+def _ver_tuple(v):
+    """Parse version string to tuple for comparison: '1.3.0' -> (1, 3, 0)."""
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
 def check_for_updates(silent=False):
     """Check GitHub for newer version. Returns (has_update, latest_ver) or None."""
     try:
@@ -986,7 +998,7 @@ def check_for_updates(silent=False):
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read().decode())
             latest = data.get("tag_name", "").lstrip("v")
-            if latest and latest != VERSION:
+            if latest and _ver_tuple(latest) > _ver_tuple(VERSION):
                 print(f"\n  🆕 Нова версія доступна: v{latest} (поточна: v{VERSION})")
                 print(f"  📥 https://github.com/{GITHUB_REPO}/releases/latest")
                 return True, latest
@@ -1038,6 +1050,17 @@ fi
 """)
     launcher.chmod(0o755)
 
+    # Copy icon if available
+    resources = contents / "Resources"
+    resources.mkdir(exist_ok=True)
+    icon_dir = Path(os.path.dirname(os.path.abspath(__file__))) / "icons"
+    icon_name = "macstress" if app_type == "full" else "macstress_lite"
+    icon_src = icon_dir / f"{icon_name}.icns"
+    icon_ref = ""
+    if icon_src.exists():
+        shutil.copy2(str(icon_src), str(resources / f"{icon_name}.icns"))
+        icon_ref = f"\n    <key>CFBundleIconFile</key>\n    <string>{icon_name}</string>"
+
     # Info.plist
     plist = contents / "Info.plist"
     bundle_id = f"com.macstress.{app_name.lower().replace(' ', '')}"
@@ -1056,7 +1079,7 @@ fi
     <key>CFBundleShortVersionString</key>
     <string>{VERSION}</string>
     <key>CFBundlePackageType</key>
-    <string>APPL</string>
+    <string>APPL</string>{icon_ref}
 </dict>
 </plist>
 """)

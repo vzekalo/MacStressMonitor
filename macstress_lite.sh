@@ -266,11 +266,26 @@ check_updates() {
     latest=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/' | sed 's/^v//')
     if [ -z "$latest" ]; then
         printf "  ${R}Не вдалося перевірити${N}\n"
-    elif [ "$latest" != "$VERSION" ]; then
-        printf "  ${G}🆕 Нова версія: v%s (поточна: v%s)${N}\n" "$latest" "$VERSION"
-        printf "  ${C}📥 https://github.com/%s/releases/latest${N}\n" "$GITHUB_REPO"
     else
-        printf "  ${G}✅ Актуальна версія: v%s${N}\n" "$VERSION"
+        # Semantic version comparison: split to major.minor.patch
+        IFS='.' read -r lmaj lmin lpat <<EOF
+$latest
+EOF
+        IFS='.' read -r cmaj cmin cpat <<EOF
+$VERSION
+EOF
+        lmaj=${lmaj:-0}; lmin=${lmin:-0}; lpat=${lpat:-0}
+        cmaj=${cmaj:-0}; cmin=${cmin:-0}; cpat=${cpat:-0}
+        is_newer=0
+        [ "$lmaj" -gt "$cmaj" ] 2>/dev/null && is_newer=1
+        [ "$lmaj" -eq "$cmaj" ] 2>/dev/null && [ "$lmin" -gt "$cmin" ] 2>/dev/null && is_newer=1
+        [ "$lmaj" -eq "$cmaj" ] 2>/dev/null && [ "$lmin" -eq "$cmin" ] 2>/dev/null && [ "$lpat" -gt "$cpat" ] 2>/dev/null && is_newer=1
+        if [ "$is_newer" -eq 1 ]; then
+            printf "  ${G}🆕 Нова версія: v%s (поточна: v%s)${N}\n" "$latest" "$VERSION"
+            printf "  ${C}📥 https://github.com/%s/releases/latest${N}\n" "$GITHUB_REPO"
+        else
+            printf "  ${G}✅ Актуальна версія: v%s${N}\n" "$VERSION"
+        fi
     fi
     sleep 2
 }
