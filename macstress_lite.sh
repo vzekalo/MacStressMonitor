@@ -1,6 +1,6 @@
 #!/bin/bash
 # ⚡ MacStress Lite — Pure Bash, Zero Dependencies
-# Compatible with bash 3.2+ (macOS default)
+# Compatible with bash 3.2+ (any Mac from 2010+)
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'
 C='\033[0;36m'; W='\033[1;37m'; D='\033[0;90m'; N='\033[0m'; BOLD='\033[1m'
@@ -13,35 +13,52 @@ RAM_GB=$(echo "scale=0; $RAM_BYTES / 1073741824" | bc 2>/dev/null || echo "?")
 OS_VER=$(sw_vers -productVersion 2>/dev/null || echo "?")
 ARCH=$(uname -m)
 
-# ── Powermetrics (background) ────────────────────────────
+# ── Powermetrics data file ───────────────────────────────
 PM_DATA="/tmp/macstress_pm_data"
 printf "" > "$PM_DATA"
+PM_BG_PID=""
 
-start_powermetrics() {
-    if [ "$ARCH" = "x86_64" ]; then
-        SAMPLERS="smc,cpu_power,gpu_power"
-    else
-        SAMPLERS="cpu_power,gpu_power"
-    fi
-    echo -e "  ${Y}🔑${N} Для температури/споживання потрібен пароль (1 раз)"
-    sudo powermetrics --samplers "$SAMPLERS" -i 3000 -n 0 2>/dev/null | while IFS= read -r line; do
-        ll=$(echo "$line" | tr '[:upper:]' '[:lower:]')
-        val=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        if [ -z "$val" ]; then continue; fi
-        case "$ll" in
-            *"cpu die temperature"*|*"cpu thermal level"*) echo "cpu_temp=$val" >> "$PM_DATA" ;;
-            *"gpu die temperature"*|*"gpu thermal level"*) echo "gpu_temp=$val" >> "$PM_DATA" ;;
-            "cpu power"*|"package power"*)                 echo "cpu_power=$val" >> "$PM_DATA" ;;
-            "gpu power"*)                                  echo "gpu_power=$val" >> "$PM_DATA" ;;
-        esac
-        lines=$(wc -l < "$PM_DATA" 2>/dev/null)
-        if [ "$lines" -gt 40 ] 2>/dev/null; then
-            tail -20 "$PM_DATA" > "${PM_DATA}.tmp" && mv "${PM_DATA}.tmp" "$PM_DATA"
-        fi
-    done &
-    PM_BG_PID=$!
-}
 get_pm() { grep "^$1=" "$PM_DATA" 2>/dev/null | tail -1 | cut -d= -f2; }
+
+# ── Ask for admin password FIRST (before clearing screen) ─
+echo ""
+echo -e "  ${Y}⚡${N} ${BOLD}MacStress Lite${N}"
+echo -e "  ${D}──────────────────────────────────────────────${N}"
+echo -e "  ${Y}🔑${N} Для температури та споживання потрібен пароль адміністратора."
+echo -e "  ${D}   (Введіть пароль нижче, він запитується 1 раз)${N}"
+echo ""
+
+# Get sudo credentials upfront (visible prompt)
+sudo -v 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo -e "  ${R}⚠️  Без пароля — температура/споживання недоступні${N}"
+    echo -e "  ${D}   (решта моніторингу працюватиме)${N}"
+    sleep 2
+fi
+
+# Start powermetrics in background with already-cached sudo
+if [ "$ARCH" = "x86_64" ]; then
+    PM_SAMPLERS="smc,cpu_power,gpu_power"
+else
+    PM_SAMPLERS="cpu_power,gpu_power"
+fi
+
+sudo powermetrics --samplers "$PM_SAMPLERS" -i 3000 -n 0 2>/dev/null | while IFS= read -r line; do
+    ll=$(echo "$line" | tr '[:upper:]' '[:lower:]')
+    val=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [ -z "$val" ]; then continue; fi
+    case "$ll" in
+        *"cpu die temperature"*|*"cpu thermal level"*) echo "cpu_temp=$val" >> "$PM_DATA" ;;
+        *"gpu die temperature"*|*"gpu thermal level"*) echo "gpu_temp=$val" >> "$PM_DATA" ;;
+        "cpu power"*|"package power"*)                 echo "cpu_power=$val" >> "$PM_DATA" ;;
+        "gpu power"*)                                  echo "gpu_power=$val" >> "$PM_DATA" ;;
+    esac
+    lines=$(wc -l < "$PM_DATA" 2>/dev/null)
+    if [ "$lines" -gt 40 ] 2>/dev/null; then
+        tail -20 "$PM_DATA" > "${PM_DATA}.tmp" && mv "${PM_DATA}.tmp" "$PM_DATA"
+    fi
+done &
+PM_BG_PID=$!
 
 # ── Stress state ─────────────────────────────────────────
 STRESS_PIDS=""
@@ -63,7 +80,7 @@ stop_stress() {
 
 cleanup() {
     stop_stress
-    kill "$PM_BG_PID" 2>/dev/null
+    if [ -n "$PM_BG_PID" ]; then kill "$PM_BG_PID" 2>/dev/null; fi
     sudo pkill -9 powermetrics 2>/dev/null
     rm -f "$PM_DATA" "${PM_DATA}.tmp" 2>/dev/null
     tput cnorm 2>/dev/null
@@ -74,11 +91,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ── Stress: CPU ───────────────────────────────────────────
+# ── Stress functions ─────────────────────────────────────
 stress_cpu() {
     dur=${1:-120}
     stop_stress
-    STRESS_TYPE="CPU"
+    STRESS_TYPE="CPU ($CORES ядер)"
     STRESS_DUR=$dur
     STRESS_T0=$(date +%s)
     i=0
@@ -91,12 +108,11 @@ stress_cpu() {
     add_pid $!
 }
 
-# ── Stress: RAM ───────────────────────────────────────────
 stress_mem() {
     mb=${1:-512}
     dur=${2:-120}
     stop_stress
-    STRESS_TYPE="RAM"
+    STRESS_TYPE="RAM (${mb}MB)"
     STRESS_DUR=$dur
     STRESS_T0=$(date +%s)
     chunks=$((mb / 64))
@@ -120,11 +136,10 @@ stress_mem() {
     add_pid $!
 }
 
-# ── Stress: Disk ──────────────────────────────────────────
 stress_disk() {
     dur=${1:-120}
     stop_stress
-    STRESS_TYPE="DISK"
+    STRESS_TYPE="DISK (R/W)"
     STRESS_DUR=$dur
     STRESS_T0=$(date +%s)
     (while :; do
@@ -137,21 +152,18 @@ stress_disk() {
     add_pid $!
 }
 
-# ── Stress: ALL ───────────────────────────────────────────
 stress_all() {
     dur=${1:-180}
     stop_stress
-    STRESS_TYPE="ALL"
+    STRESS_TYPE="ALL (CPU+RAM+Disk)"
     STRESS_DUR=$dur
     STRESS_T0=$(date +%s)
-    # CPU
     i=0
     while [ "$i" -lt "$CORES" ]; do
         (while :; do :; done) &
         add_pid $!
         i=$((i + 1))
     done
-    # RAM 512MB
     (
         i=0; while [ "$i" -lt 8 ]; do
             dd if=/dev/urandom of="/tmp/macstress_mem_$i" bs=1m count=64 2>/dev/null
@@ -163,15 +175,13 @@ stress_all() {
         done
     ) &
     add_pid $!
-    # Disk
     (while :; do dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=128 2>/dev/null; rm -f /tmp/macstress_disk_w; done) &
     add_pid $!
-    # Timer
     (sleep "$dur"; kill $STRESS_PIDS 2>/dev/null; rm -f /tmp/macstress_*) &
     add_pid $!
 }
 
-# ── Parse vm_stat ─────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────
 parse_vm() {
     data=$(vm_stat 2>/dev/null)
     ps=16384
@@ -197,25 +207,20 @@ make_bar() {
 
 # ── Draw static header ──────────────────────────────────
 clear
-tput civis 2>/dev/null
-
 echo -e "  ${Y}⚡${N} ${BOLD}MacStress Lite${N}"
 echo -e "  ${D}══════════════════════════════════════════════════${N}"
 echo -e "  ${C}Модель${N}   $MODEL"
 echo -e "  ${C}CPU${N}      $CPU_BRAND"
 echo -e "  ${C}Ядра${N}  $CORES  ·  ${C}RAM${N}  ${RAM_GB} GB  ·  ${C}macOS${N}  $OS_VER ($ARCH)"
 echo -e "  ${D}══════════════════════════════════════════════════${N}"
-echo -e "  ${BOLD}Керування:${N}"
+echo -e "  ${BOLD}Керування (натисніть клавішу):${N}"
 echo -e "  ${Y}[1]${N} CPU стрес  ${Y}[2]${N} RAM стрес  ${Y}[3]${N} Диск стрес"
 echo -e "  ${Y}[4]${N} ВСЕ разом  ${Y}[x]${N} Зупинити   ${Y}[q]${N} Вийти"
 echo -e "  ${D}══════════════════════════════════════════════════${N}"
-# 7 blank lines for live data area
-echo ""; echo ""; echo ""; echo ""; echo ""; echo ""; echo ""
+# 8 blank lines for live data (CPU, RAM, Swap, Temp, Stress status, separator, blank, blank)
+echo ""; echo ""; echo ""; echo ""; echo ""; echo ""; echo ""; echo ""
 
 LIVE_LINE=11
-
-tput cnorm 2>/dev/null
-start_powermetrics
 tput civis 2>/dev/null
 
 # ── Main Loop ─────────────────────────────────────────────
@@ -241,42 +246,44 @@ while true; do
     CP=$(get_pm cpu_power)
     GP=$(get_pm gpu_power)
 
-    # Colors
     CC=$G; [ "$CPU_INT" -gt 50 ] 2>/dev/null && CC=$Y; [ "$CPU_INT" -gt 80 ] 2>/dev/null && CC=$R
     MC=$G; [ "$MEM_INT" -gt 60 ] 2>/dev/null && MC=$Y; [ "$MEM_INT" -gt 85 ] 2>/dev/null && MC=$R
 
     CPU_BAR=$(make_bar "$CPU_INT")
     MEM_BAR=$(make_bar "$MEM_INT")
 
-    # Stress timer
-    SI=""
-    if [ -n "$STRESS_TYPE" ]; then
-        now=$(date +%s)
-        rem=$((STRESS_DUR - (now - STRESS_T0)))
-        if [ "$rem" -le 0 ] 2>/dev/null; then
-            stop_stress
-        else
-            SI="  ${R}🔥 СТРЕС: ${STRESS_TYPE} — ${rem}с${N}"
-        fi
-    fi
-
-    # Temp+Power
+    # Temp+Power string
     TP=""
     [ -n "$CT" ] && TP="${TP}CPU ${CT}°C  "
     [ -n "$GT" ] && TP="${TP}GPU ${GT}°C  "
     [ -n "$CP" ] && TP="${TP}⚡${CP}W  "
     [ -n "$GP" ] && TP="${TP}GPU⚡${GP}W  "
-    [ -z "$TP" ] && TP="⏳ чекаю дані..."
+    [ -z "$TP" ] && TP="⏳ чекаю дані powermetrics..."
+
+    # Stress status string (always visible)
+    if [ -n "$STRESS_TYPE" ]; then
+        now=$(date +%s)
+        rem=$((STRESS_DUR - (now - STRESS_T0)))
+        if [ "$rem" -le 0 ] 2>/dev/null; then
+            stop_stress
+            SI="  ${G}✅ Стрес: не запущений${N}"
+        else
+            SI="  ${R}🔥 СТРЕС: ${STRESS_TYPE} — залишилось ${rem}с${N}"
+        fi
+    else
+        SI="  ${G}✅ Стрес: не запущений${N}"
+    fi
 
     # Render at fixed position
     tput cup "$LIVE_LINE" 0 2>/dev/null
-    printf "  ${W}CPU${N}  %5s%%  ${CC}%s${N}\n" "$CPU_PCT" "$CPU_BAR"
-    printf "  ${W}RAM${N}  %5s%%  ${MC}%s${N}  ${D}(${MEM_USED}/${RAM_GB} GB)${N}\n" "$MEM_PCT" "$MEM_BAR"
-    printf "  ${W}Swap${N}  %-6s MB    ${W}Load${N}  %-8s  ${W}Batt${N}  %-5s\n" "${SWAP:-0}" "${LOAD:-?}" "${BATT:-n/a}"
-    printf "  ${W}🌡${N}  %-50s\n" "$TP"
-    printf "%-62s\n" "$SI"
+    printf "  ${W}CPU${N}  %5s%%  ${CC}%s${N}             \n" "$CPU_PCT" "$CPU_BAR"
+    printf "  ${W}RAM${N}  %5s%%  ${MC}%s${N}  ${D}(${MEM_USED}/${RAM_GB}GB)${N}  \n" "$MEM_PCT" "$MEM_BAR"
+    printf "  ${W}Swap${N} %-5s MB  ${W}Load${N} %-6s  ${W}Batt${N} %-5s       \n" "${SWAP:-0}" "${LOAD:-?}" "${BATT:-n/a}"
+    printf "  ${W}🌡${N}  %-50s      \n" "$TP"
+    printf "%-65s\n" "$SI"
     printf "  ${D}──────────────────────────────────────────────────${N}\n"
-    printf "                                                             \n"
+    printf "                                                               \n"
+    printf "                                                               \n"
 
     read -t 2 -n 1 key 2>/dev/null
     case "$key" in
