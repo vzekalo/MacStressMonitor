@@ -543,7 +543,7 @@ pwr:`<div class="c pwr" data-tile="pwr" draggable="true"><div class="ct">Power C
 mem:`<div class="c mem" data-tile="mem" draggable="true"><div class="ct">Memory (RAM)</div><div class="cv" id="memV">&mdash;</div><div class="cs" id="memS"></div><canvas id="memC"></canvas></div>`,
 swp:`<div class="c swp" data-tile="swp" draggable="true"><div class="ct">Swap (SSD &#8594; RAM)</div><div class="cv" id="swpV" style="font-size:26px">&mdash;</div><div class="cs" id="swpS"></div><div class="sbar"><div class="sfill" id="swpB"></div></div></div>`,
 dsk:`<div class="c dsk" data-tile="dsk" draggable="true"><div class="ct">Disk I/O</div><div class="cv" id="dskV" style="font-size:26px">&mdash;</div><div class="cs" id="dskS"></div><canvas id="dskC"></canvas></div>`,
-bench:`<div class="c bench" data-tile="bench" draggable="true"><div class="ct">Disk Benchmark</div><div style="display:flex;flex-direction:column;justify-content:center;height:100%;"><button class="b bench" onclick="diskBench()" id="benchBtn" style="width:100%;margin-bottom:10px">&#128300; RUN TEST</button><div id="benchRes" style="font-family:'SF Mono',monospace;font-size:11px;color:#aaa;line-height:1.4"></div></div></div>`,
+bench:`<div class="c bench" data-tile="bench" draggable="true"><div class="ct">Тест диску</div><div style="display:flex;flex-direction:column;justify-content:center;height:100%;"><button class="b bench" onclick="diskBench()" id="benchBtn" style="width:100%;margin-bottom:10px;font-size:14px;padding:12px">&#128300; ЗАПУСТИТИ ТЕСТ</button><div id="benchRes" style="font-family:'SF Mono',monospace;font-size:13px;color:#aaa;line-height:1.6"></div></div></div>`,
 inf:`<div class="c inf" data-tile="inf" draggable="true"><div class="ct">System Info</div><div id="info" style="font-size:12px;color:#aaa;line-height:1.6"></div><div id="updStatus" style="margin-top:8px;border-top:1px solid #333;padding-top:8px"><button class="b" style="background:#333;font-size:11px;padding:4px 8px;width:100%" onclick="checkUpd()">&#128260; Check for Updates</button></div></div>`
 };
 const DEF_ORDER=['cpu','tmp','pwr','mem','swp','dsk','bench','inf'];
@@ -679,23 +679,23 @@ function checkUpd(){
 function diskBench(){
 let bb=document.getElementById('benchBtn');if(!bb)return;
 let res=document.getElementById('benchRes');
-bb.disabled=true;bb.textContent='⏳ Running...';
+bb.disabled=true;bb.textContent='⏳ Виконується...';
 if(res)res.innerHTML='';
 fetch('/api/disk_bench',{method:'POST'}).then(()=>{
  let pi=setInterval(()=>{
   fetch('/api/disk_bench_result').then(r=>r.json()).then(d=>{
    if(!d.running&&d.results.length>0){
-    clearInterval(pi);bb.disabled=false;bb.textContent='Done';
-    setTimeout(()=>{bb.textContent='🔄 RERUN'}, 2000);
-    let t='<table style="width:100%"><tr><td style="color:#666">Test</td><td style="text-align:right">WR</td><td style="text-align:right">RD</td></tr>';
-    d.results.forEach(r=>{t+='<tr><td style="color:#ddd">'+r.label.replace('Seq ','').replace('Rnd ','R ')+'</td><td style="text-align:right;color:#ff6b6b">'+r.write_mb+'</td><td style="text-align:right;color:#48dbfb">'+r.read_mb+'</td></tr>';});
-    t+='</table>';
+    clearInterval(pi);bb.disabled=false;bb.textContent='✅ Готово';
+    setTimeout(()=>{bb.disabled=false;bb.textContent='🔄 ПОВТОРИТИ';bb.style.background='';}, 2000);
+    let t='<table style="width:100%;border-collapse:collapse"><tr style="color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.8px"><td>Тест</td><td style="text-align:right">Запис</td><td style="text-align:right">Читання</td></tr>';
+    d.results.forEach(r=>{t+='<tr style="border-top:1px solid #222"><td style="color:#ddd;font-size:13px;padding:4px 0">'+r.label+'</td><td style="text-align:right;color:#ff6b6b;font-size:15px;font-weight:700">'+r.write_mb+'</td><td style="text-align:right;color:#48dbfb;font-size:15px;font-weight:700">'+r.read_mb+'</td></tr>';});
+    t+='<tr><td colspan="3" style="font-size:10px;color:#555;padding-top:4px;text-align:right">МБ/с</td></tr></table>';
     if(res)res.innerHTML=t;
    } else if(d.running){
-     bb.textContent='⏳ '+d.results.length+'/4';
+     bb.textContent='⏳ '+d.results.length+'/4 тестів';
      if(d.results.length>0 && res){
         let last=d.results[d.results.length-1];
-        res.innerHTML='Current: '+last.label+'<br>W: '+last.write_mb+' | R: '+last.read_mb;
+        res.innerHTML='<span style="color:#777;font-size:12px">Зараз: '+last.label+'</span><br><span style="color:#ff6b6b">Запис: '+last.write_mb+'</span> · <span style="color:#48dbfb">Читання: '+last.read_mb+'</span> МБ/с';
      }
    }
   });
@@ -1219,6 +1219,11 @@ def create_app_launcher(app_type="full"):
         launch_cmd = f'exec bash "{script_path}"'
 
     app_path = apps_dir / f"{app_name}.app"
+
+    # Delete old bundle entirely so Finder drops cached icon
+    if app_path.exists():
+        shutil.rmtree(str(app_path), ignore_errors=True)
+
     contents = app_path / "Contents"
     macos = contents / "MacOS"
     macos.mkdir(parents=True, exist_ok=True)
@@ -1272,12 +1277,17 @@ fi
 </dict>
 </plist>
 """)
-    # Force Finder to refresh icon cache on reinstall
+
+    # Force icon cache refresh:
+    # 1. Touch the bundle to update mtime
     subprocess.run(["touch", str(app_path)], capture_output=True)
-    subprocess.run([
-        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-        "-f", str(app_path)
-    ], capture_output=True)
+    # 2. Nuke LaunchServices database and re-register
+    lsreg = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    subprocess.run([lsreg, "-kill", "-r", "-domain", "local", "-domain", "system", "-domain", "user"],
+                   capture_output=True)
+    subprocess.run([lsreg, "-f", str(app_path)], capture_output=True)
+    # 3. Restart Dock (refreshes Launchpad + Finder sidebar icons)
+    subprocess.run(["killall", "Dock"], capture_output=True)
 
     print(f"  ✅ {app_name}.app створено в ~/Applications/")
     print(f"  📂 {app_path}")
