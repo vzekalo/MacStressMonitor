@@ -62,27 +62,41 @@ trap cleanup EXIT INT TERM
 
 stress_cpu() {
     local d=${1:-120}; stop_stress; STRESS_TYPE="CPU"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
-    for ((i=0;i<CORES;i++)); do (while :; do :; done) &; STRESS_PIDS+=($!); done
-    (sleep $d; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done) &; STRESS_PIDS+=($!)
+    for ((i=0;i<CORES;i++)); do
+        (while :; do :; done) &
+        STRESS_PIDS+=($!)
+    done
+    (sleep $d; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done) &
+    STRESS_PIDS+=($!)
 }
 stress_mem() {
     local mb=${1:-1024} d=${2:-120}; stop_stress; STRESS_TYPE="RAM"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
-    (c=$((mb/64)); for ((i=0;i<c;i++)); do dd if=/dev/urandom of=/tmp/macstress_mem_$i bs=1m count=64 2>/dev/null &; done; wait
-     while :; do for ((i=0;i<c;i++)); do cat /tmp/macstress_mem_$i >/dev/null 2>/dev/null; done; sleep 1; done) &; STRESS_PIDS+=($!)
-    (sleep $d; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_mem_*) &; STRESS_PIDS+=($!)
+    (c=$((mb/64)); for ((i=0;i<c;i++)); do dd if=/dev/urandom of=/tmp/macstress_mem_$i bs=1m count=64 2>/dev/null & done; wait
+     while :; do for ((i=0;i<c;i++)); do cat /tmp/macstress_mem_$i >/dev/null 2>/dev/null; done; sleep 1; done) &
+    STRESS_PIDS+=($!)
+    (sleep $d; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_mem_*) &
+    STRESS_PIDS+=($!)
 }
 stress_disk() {
     local d=${1:-120}; stop_stress; STRESS_TYPE="DISK"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
-    (while :; do dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=256 2>/dev/null; dd if=/tmp/macstress_disk_w of=/dev/null bs=1m 2>/dev/null; rm -f /tmp/macstress_disk_w; done) &; STRESS_PIDS+=($!)
-    (sleep $d; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_disk_*) &; STRESS_PIDS+=($!)
+    (while :; do dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=256 2>/dev/null; dd if=/tmp/macstress_disk_w of=/dev/null bs=1m 2>/dev/null; rm -f /tmp/macstress_disk_w; done) &
+    STRESS_PIDS+=($!)
+    (sleep $d; kill ${STRESS_PIDS[-1]} 2>/dev/null; rm -f /tmp/macstress_disk_*) &
+    STRESS_PIDS+=($!)
 }
 stress_all() {
     local d=${1:-180}; stop_stress; STRESS_TYPE="ALL"; STRESS_DUR=$d; STRESS_T0=$(date +%s)
-    for ((i=0;i<CORES;i++)); do (while :; do :; done) &; STRESS_PIDS+=($!); done
+    for ((i=0;i<CORES;i++)); do
+        (while :; do :; done) &
+        STRESS_PIDS+=($!)
+    done
     (for ((i=0;i<8;i++)); do dd if=/dev/urandom of=/tmp/macstress_mem_$i bs=1m count=64 2>/dev/null; done
-     while :; do for ((i=0;i<8;i++)); do cat /tmp/macstress_mem_$i >/dev/null 2>/dev/null; done; sleep 1; done) &; STRESS_PIDS+=($!)
-    (while :; do dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=128 2>/dev/null; rm -f /tmp/macstress_disk_w; done) &; STRESS_PIDS+=($!)
-    (sleep $d; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done; rm -f /tmp/macstress_*) &; STRESS_PIDS+=($!)
+     while :; do for ((i=0;i<8;i++)); do cat /tmp/macstress_mem_$i >/dev/null 2>/dev/null; done; sleep 1; done) &
+    STRESS_PIDS+=($!)
+    (while :; do dd if=/dev/zero of=/tmp/macstress_disk_w bs=1m count=128 2>/dev/null; rm -f /tmp/macstress_disk_w; done) &
+    STRESS_PIDS+=($!)
+    (sleep $d; for p in "${STRESS_PIDS[@]}"; do kill $p 2>/dev/null; done; rm -f /tmp/macstress_*) &
+    STRESS_PIDS+=($!)
 }
 
 parse_vm() {
