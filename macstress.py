@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 from collections import deque
 from pathlib import Path
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 GITHUB_REPO = "vzekalo/MacStressMonitor"
 
 # ═══════════════════════════ System Detection ═══════════════════════════
@@ -674,22 +674,22 @@ function checkUpd(){
  fetch('/api/check_update').then(r=>r.json()).then(d=>{
   let s=document.getElementById('updStatus');
   if(d.has_update){
-   s.innerHTML='<div style="color:#2ed573;margin-bottom:5px">🆕 Нова версія: v'+d.latest+'</div><button class="b go" style="display:block;width:100%;text-align:center;font-size:11px;padding:6px;background:#2ed573;color:#000;border:none;border-radius:6px;cursor:pointer" onclick="doUpdate(this)">⬇ Оновити</button>';
+   s.innerHTML='<div style="color:#2ed573;margin-bottom:5px">🆕 Нова версія: v'+d.latest+'</div><button class="b go" style="display:block;width:100%;text-align:center;font-size:11px;padding:6px;background:#2ed573;color:#000;border:none;border-radius:6px;cursor:pointer" onclick="doUpdate(this,\''+d.latest+'\')">\u2b07 Оновити</button>';
   } else {
-   b.textContent='✅ Актуальна (v'+d.current+')';
+   b.textContent='\u2705 Актуальна (v'+d.current+')';
    b.style.background='rgba(46,213,115,0.1)';
    b.style.color='#2ed573';
-   setTimeout(()=>{b.disabled=false;b.textContent='🔄 Check for Updates';b.style.background='#333';b.style.color='#fff'}, 5000);
+   setTimeout(()=>{b.disabled=false;b.textContent='\ud83d\udd04 Check for Updates';b.style.background='#333';b.style.color='#fff'}, 5000);
   }
  });
 }
-function doUpdate(btn){
- btn.disabled=true;btn.textContent='⏳ Оновлення...';
- fetch('/api/do_update',{method:'POST'}).then(r=>r.json()).then(d=>{
-  if(d.ok){btn.textContent='✅ Перезавантаження...';btn.style.background='#2ed573';
+function doUpdate(btn,ver){
+ btn.disabled=true;btn.textContent='\u23f3 Оновлення...';
+ fetch('/api/do_update?ver='+ver,{method:'POST'}).then(r=>r.json()).then(d=>{
+  if(d.ok){btn.textContent='\u2705 Перезавантаження...';btn.style.background='#2ed573';
    setTimeout(()=>{location.reload()},3000);
-  } else {btn.textContent='❌ '+d.error;btn.style.background='#c0392b';}
- }).catch(()=>{btn.textContent='❌ Помилка мережі';btn.style.background='#c0392b';});
+  } else {btn.textContent='\u274c '+d.error;btn.style.background='#c0392b';}
+ }).catch(()=>{btn.textContent='\u274c Помилка мережі';btn.style.background='#c0392b';});
 }
 
 function diskBench(){
@@ -896,9 +896,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=_run_disk_benchmark, daemon=True).start()
                 self._ok("application/json", json.dumps({"ok": True, "status": "started"}).encode())
-        elif self.path == "/api/do_update":
+        elif self.path.startswith("/api/do_update"):
             try:
-                ok, msg = self_update()
+                ver = None
+                qs = urllib.parse.urlparse(self.path).query
+                params = urllib.parse.parse_qs(qs)
+                ver = params.get('ver', [None])[0]
+                ok, msg = self_update(target_ver=ver)
                 self._ok("application/json", json.dumps({"ok": ok, "error": msg if not ok else None}).encode())
                 if ok:
                     threading.Thread(target=lambda: (time.sleep(1), os.execv(sys.executable, [sys.executable] + sys.argv)), daemon=True).start()
@@ -1009,7 +1013,7 @@ def run_native_app(port):
             
             resp = alert.runModal()
             if has_update and resp == 1001:
-                ok, err = self_update()
+                ok, err = self_update(target_ver=latest_ver)
                 if ok:
                     a2 = NSAlert.alloc().init()
                     a2.setMessageText_("Оновлено! Перезапуск...")
@@ -1235,14 +1239,27 @@ def check_for_updates(silent=False):
             print("  ⚠️  Не вдалося перевірити оновлення")
         return None, VERSION
 
-def self_update():
+def self_update(target_ver=None):
     """Download latest macstress.py from GitHub and replace local file.
+    Downloads from the release tag URL to avoid CDN caching issues.
     Returns (success: bool, message: str)."""
     try:
         import urllib.request
-        # Get default branch raw URL
-        raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/macstress.py"
-        req = urllib.request.Request(raw_url, headers={"User-Agent": "MacStress"})
+
+        # If no target version provided, check for it
+        if not target_ver:
+            result = check_for_updates(silent=True)
+            if result and result[0]:
+                target_ver = result[1]
+            else:
+                return False, "Немає доступних оновлень"
+
+        # Download from release tag (not main branch — CDN caches main for 3-5 min)
+        raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/v{target_ver}/macstress.py"
+        req = urllib.request.Request(raw_url, headers={
+            "User-Agent": "MacStress",
+            "Cache-Control": "no-cache",
+        })
         with urllib.request.urlopen(req, timeout=15) as r:
             new_code = r.read()
         
@@ -1250,8 +1267,8 @@ def self_update():
         import ast
         ast.parse(new_code)
         
-        # Extract version from downloaded file to confirm it's newer
-        m = re.search(rb'VERSION\s*=\s*["\']([\d.]+)["\']', new_code)
+        # Extract version from downloaded file to confirm
+        m = re.search(rb'VERSION\s*=\s*["\'](\d[\d.]+)["\']', new_code)
         if not m:
             return False, "Не вдалося визначити версію нового файлу"
         new_ver = m.group(1).decode()
