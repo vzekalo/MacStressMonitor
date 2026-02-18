@@ -54,8 +54,6 @@ if [ -z "$PY3" ]; then
     
     # python-build-standalone by astral-sh — fully relocatable builds
     # These work on macOS 10.9+ without any installation
-    PY_VER="3.12.9"
-    PY_TAG="20250210"
     
     if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
         PY_TRIPLE="aarch64-apple-darwin"
@@ -63,16 +61,27 @@ if [ -z "$PY3" ]; then
         PY_TRIPLE="x86_64-apple-darwin"
     fi
     
-    PY_FILE="cpython-${PY_VER}+${PY_TAG}-${PY_TRIPLE}-install_only.tar.gz"
-    PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_TAG}/${PY_FILE}"
-    
-    info "URL: $PY_URL"
-    info "Size: ~40MB, downloading..."
+    # Discover latest release tag from GitHub API, fallback to known-good
+    PY_TAG=$(curl -fsSL "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/')
+    [ -z "$PY_TAG" ] && PY_TAG="20260211"
+    info "Release tag: $PY_TAG"
     
     mkdir -p "$INSTALL_DIR"
     TMP_TAR="/tmp/macstress_python.tar.gz"
+    DOWNLOADED=""
     
-    if curl -fSL "$PY_URL" -o "$TMP_TAR" 2>/dev/null; then
+    # Try multiple Python versions — releases may bundle different ones
+    for PY_VER in 3.13.3 3.13.2 3.13.1 3.12.10 3.12.9 3.11.12 3.11.11 3.10.19 3.10.18; do
+        PY_FILE="cpython-${PY_VER}+${PY_TAG}-${PY_TRIPLE}-install_only.tar.gz"
+        PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_TAG}/${PY_FILE}"
+        info "Trying Python ${PY_VER}..."
+        if curl -fSL --connect-timeout 10 "$PY_URL" -o "$TMP_TAR" 2>/dev/null; then
+            DOWNLOADED="yes"
+            break
+        fi
+    done
+    
+    if [ -n "$DOWNLOADED" ]; then
         info "Extracting to $PY_DIR..."
         rm -rf "$PY_DIR"
         mkdir -p "$PY_DIR"
@@ -92,25 +101,7 @@ if [ -z "$PY3" ]; then
             fi
         fi
     else
-        warn "Download failed. Trying older Python 3.11..."
-        
-        # Fallback: try Python 3.11
-        PY_VER="3.11.11"
-        PY_TAG="20250210"
-        PY_FILE="cpython-${PY_VER}+${PY_TAG}-${PY_TRIPLE}-install_only.tar.gz"
-        PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_TAG}/${PY_FILE}"
-        
-        if curl -fSL "$PY_URL" -o "$TMP_TAR" 2>/dev/null; then
-            rm -rf "$PY_DIR"
-            mkdir -p "$PY_DIR"
-            tar xf "$TMP_TAR" -C "$INSTALL_DIR" 2>/dev/null
-            rm -f "$TMP_TAR"
-            PY_BIN=$(find "$INSTALL_DIR" -name "python3" -type f -perm +111 2>/dev/null | head -1)
-            if [ -n "$PY_BIN" ]; then
-                PY3="$PY_BIN"
-                ok "Portable Python: $($PY3 --version 2>&1)"
-            fi
-        fi
+        warn "All download attempts failed"
     fi
     
     if [ -z "$PY3" ]; then
