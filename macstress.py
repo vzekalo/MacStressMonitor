@@ -478,6 +478,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Helvetica Ne
 .b:hover{background:rgba(255,255,255,.08);transform:translateY(-1px)}
 .b.on{background:linear-gradient(135deg,#ff6b6b,#ee5a24);border-color:transparent;color:#fff;box-shadow:0 4px 15px rgba(255,107,107,.2)}
 .b.go{background:linear-gradient(135deg,#2ed573,#26de81);border-color:transparent;color:#fff}
+.b.bench{background:linear-gradient(135deg,#a29bfe,#6c5ce7);border-color:transparent;color:#fff}
 .b.st{background:linear-gradient(135deg,#ff4757,#c0392b);border-color:transparent;color:#fff}
 .d{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .d.y{background:#2ed573;box-shadow:0 0 6px rgba(46,213,115,.5);animation:pu 1.5s infinite}.d.n{background:#636e72}
@@ -641,7 +642,8 @@ let allBtn=running
  :'<button class="b go" onclick="tA(1)">&#9654; START ALL</button>';
 let timer='<div class="timer"><label>Duration:</label><select id="dur"><option value="60">1 min</option><option value="300">5 min</option><option value="600" selected>10 min</option><option value="1800">30 min</option><option value="3600">1 hour</option><option value="0">&#8734; No limit</option></select></div>';
 let cd='<div class="cd'+(endT>0?' vis':'')+'" id="cdBox">&#9200; <span id="cdT"></span></div>';
-$('ctrl').innerHTML=tBtns+timer+allBtn+cd;
+let bench='<button class="b bench" onclick="diskBench()" id="benchBtn">&#128300; BENCHMARK</button>';
+$('ctrl').innerHTML=tBtns+timer+allBtn+bench+cd;
 ctrlInit=true;
 }
 function uC(a){
@@ -673,6 +675,24 @@ function tA(on){let dur=$('dur')?$('dur').value:'600';
 fetch('/api/toggle_all?on='+on+'&dur='+dur,{method:'POST'});
 if(on==1&&parseInt(dur)>0){endT=Date.now()+parseInt(dur)*1000;if(cdi)clearInterval(cdi);cdi=setInterval(updCD,200);updCD();}
 else if(on==0){endT=0;if(cdi){clearInterval(cdi);cdi=null;}let cb=$('cdBox');if(cb)cb.className='cd';}}
+
+function diskBench(){
+let bb=document.getElementById('benchBtn');if(!bb)return;
+bb.disabled=true;bb.textContent='⏳ Running...';
+fetch('/api/disk_bench',{method:'POST'}).then(()=>{
+ let pi=setInterval(()=>{
+  fetch('/api/disk_bench_result').then(r=>r.json()).then(d=>{
+   if(!d.running&&d.results.length>0){
+    clearInterval(pi);bb.disabled=false;bb.textContent='🔬 BENCHMARK';
+    let h='<div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:999;display:flex;align-items:center;justify-content:center" onclick="this.remove()"><div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;min-width:400px" onclick="event.stopPropagation()"><h3 style="margin:0 0 16px;color:#00d4ff">💽 Disk Benchmark Results</h3><table style="width:100%;border-collapse:collapse">';
+    h+='<tr style="color:#888"><td>Test</td><td style="text-align:right">Write MB/s</td><td style="text-align:right">Read MB/s</td></tr>';
+    d.results.forEach(r=>{h+='<tr style="border-top:1px solid #333"><td style="color:#eee;padding:6px 0">'+r.label+'</td><td style="text-align:right;color:#ff6b6b;padding:6px 0">'+r.write_mb+'</td><td style="text-align:right;color:#48dbfb;padding:6px 0">'+r.read_mb+'</td></tr>';});
+    h+='</table><p style="color:#666;font-size:12px;margin:12px 0 0">Click outside to close</p></div></div>';
+    document.body.insertAdjacentHTML('beforeend',h);
+   } else if(d.running){bb.textContent='⏳ '+d.results.length+'/4...';}
+  });
+ },1500);
+});}
 
 function sse(){let es=new EventSource('/events');
 es.onmessage=e=>{try{let d=JSON.parse(e.data);
@@ -827,6 +847,17 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=_sm.stop_all, daemon=True).start()
             self._ok("application/json", b'{"ok":true}')
+        elif self.path == "/api/disk_bench":
+            if _disk_bench_running:
+                self._ok("application/json", json.dumps({"error": "Benchmark already running"}).encode())
+            else:
+                threading.Thread(target=_run_disk_benchmark, daemon=True).start()
+                self._ok("application/json", json.dumps({"ok": True, "status": "started"}).encode())
+        elif self.path == "/api/disk_bench_result":
+            self._ok("application/json", json.dumps({
+                "running": _disk_bench_running,
+                "results": _disk_bench_results
+            }).encode())
         else:
             self.send_error(404)
 
@@ -980,6 +1011,100 @@ def run_native_app(port):
     app.run()
 
 
+# ═══════════════════════════ Disk Benchmark ═════════════════════════════
+
+_disk_bench_running = False
+_disk_bench_results = []
+
+def _dd_bench(label, bs, count, filepath, total_mb):
+    """Run a write+read benchmark pass. Returns dict with results."""
+    import time as _t
+    # Write
+    t0 = _t.monotonic()
+    try:
+        subprocess.run(["dd", "if=/dev/zero", f"of={filepath}", f"bs={bs}", f"count={count}"],
+                       capture_output=True, timeout=120)
+        subprocess.run(["sync"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    t1 = _t.monotonic()
+    w_dur = max(t1 - t0, 0.001)
+    w_speed = int(total_mb / w_dur)
+
+    # Read (purge cache first)
+    subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=10)
+    t0 = _t.monotonic()
+    try:
+        subprocess.run(["dd", f"if={filepath}", "of=/dev/null", f"bs={bs}"],
+                       capture_output=True, timeout=120)
+    except Exception:
+        pass
+    t1 = _t.monotonic()
+    r_dur = max(t1 - t0, 0.001)
+    r_speed = int(total_mb / r_dur)
+
+    try: os.unlink(filepath)
+    except: pass
+    return {"label": label, "write_mb": w_speed, "read_mb": r_speed}
+
+def _run_disk_benchmark():
+    """Run full 4-pass disk benchmark (matches macstress_lite.sh)."""
+    global _disk_bench_running, _disk_bench_results
+    _disk_bench_running = True
+    _disk_bench_results = []
+    bf = "/tmp/macstress_bench"
+    passes = [
+        ("Seq 1MB",   "1048576",  512,  f"{bf}_seq1m",   512),
+        ("Seq 256K",  "262144",   1024, f"{bf}_seq256k", 256),
+        ("Seq 64K",   "65536",    2048, f"{bf}_seq64k",  128),
+        ("Rnd 4K",    "4096",     8192, f"{bf}_rnd4k",   32),
+    ]
+    for label, bs, count, fpath, total_mb in passes:
+        r = _dd_bench(label, bs, count, fpath, total_mb)
+        _disk_bench_results.append(r)
+    _disk_bench_running = False
+
+# ═══════════════════════════ Sudo Pre-Elevation ═════════════════════════
+
+def _pre_elevate_sudo():
+    """Try to get sudo credentials early, before NSApp takes over.
+    Uses native macOS password dialog → sudo -S -v to cache credentials."""
+    if os.geteuid() == 0:
+        return True
+    # Check if sudo is already cached (non-interactive)
+    try:
+        r = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return True
+    except Exception:
+        pass
+    # Show native macOS password dialog
+    try:
+        dialog_script = (
+            'text returned of (display dialog '
+            '"MacStress: введіть пароль для моніторингу енергії" '
+            'with title "MacStress" default answer "" with hidden answer '
+            'with icon caution)'
+        )
+        proc = subprocess.run(
+            ["osascript", "-e", dialog_script],
+            capture_output=True, text=True, timeout=120
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            pw = proc.stdout.strip()
+            sv = subprocess.run(
+                ["sudo", "-S", "-v"],
+                input=pw + "\n", capture_output=True, text=True, timeout=10
+            )
+            del pw
+            if sv.returncode == 0:
+                print("  🔐 sudo: авторизовано")
+                return True
+    except Exception:
+        pass
+    print("  ⚠️  sudo: не авторизовано — дані енергії можуть бути недоступні")
+    return False
+
 # ═══════════════════════════ Update Check ═══════════════════════════════
 
 def _ver_tuple(v):
@@ -1122,6 +1247,9 @@ def main():
 
     # Check for updates in background
     threading.Thread(target=check_for_updates, args=(True,), daemon=True).start()
+
+    # Pre-elevate sudo for powermetrics (before NSApp takes over the process)
+    _si["has_sudo"] = _pre_elevate_sudo()
 
     _mc = MetricsCollector(_si)
     _sm = StressManager(_si)
