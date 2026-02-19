@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 PLIST_LABEL = "com.macstressmonitor"
-PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{PLIST_LABEL}.plist"
+PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / (PLIST_LABEL + ".plist")
 LOG_PATH = Path.home() / "Library" / "Logs" / "MacStressMonitor.log"
 
 
