@@ -73,10 +73,21 @@ class MetricsCollector:
             try:
                 cpu_total = 0.0
                 try:
-                    cpu_raw = subprocess.getoutput(
-                        "ps -A -o %cpu | awk 'NR>1{s+=$1} END {printf \"%.1f\", s}'"
+                    # Primary: use top -l 1 (reliable on Apple Silicon .app bundles)
+                    top_raw = subprocess.getoutput(
+                        "top -l 1 -s 0 -n 0 2>/dev/null | grep 'CPU usage'"
                     )
-                    cpu_total = min(round(float(cpu_raw.strip()) / cores, 1), 100.0)
+                    if top_raw:
+                        user_m = re.search(r'([\d.]+)%\s*user', top_raw)
+                        sys_m = re.search(r'([\d.]+)%\s*sys', top_raw)
+                        if user_m and sys_m:
+                            cpu_total = round(float(user_m.group(1)) + float(sys_m.group(1)), 1)
+                    # Fallback: ps -A if top didn't work
+                    if cpu_total < 0.1:
+                        cpu_raw = subprocess.getoutput(
+                            "ps -A -o %cpu | awk 'NR>1{s+=$1} END {printf \"%.1f\", s}'"
+                        )
+                        cpu_total = min(round(float(cpu_raw.strip()) / cores, 1), 100.0)
                 except (ValueError, ZeroDivisionError):
                     pass
 
@@ -314,7 +325,8 @@ class MetricsCollector:
             self._stop.wait(2.0)
 
     def _parse_pm(self, block):
-        ct = gt = fan = freq = cpu_pw = gpu_pw = None
+        ct = gt = fan = cpu_pw = gpu_pw = None
+        freqs = []  # collect all cluster frequencies, take max
         for l in block.split("\n"):
             ll = l.lower().strip()
             if "cpu die temperature" in ll or "cpu thermal level" in ll:
@@ -341,11 +353,13 @@ class MetricsCollector:
                     v = float(re.search(r'([\d.]+)', ll.split(":")[-1]).group(1))
                     if cpu_pw is None: cpu_pw = v / 1000 if "mw" in ll else v
                 except: pass
-            elif "hw active frequency" in ll or "average frequency" in ll:
+            elif "cluster hw active frequency" in ll or "average frequency" in ll:
                 try:
                     v = float(re.search(r'([\d.]+)', ll.split(":")[-1]).group(1))
-                    freq = v / 1000 if v > 100 else v
+                    ghz = v / 1000 if v > 100 else v
+                    freqs.append(ghz)
                 except: pass
+        freq = max(freqs) if freqs else None
         with self._lock:
             if ct is not None: self.data["cpu_temp"] = round(ct, 1)
             if gt is not None: self.data["gpu_temp"] = round(gt, 1)
