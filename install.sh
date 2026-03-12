@@ -266,4 +266,4 @@ printf "  ${C}Apps:${N}      ~/Applications/MacStress.app\n"
 printf "  ${G}============================================${N}\n"
 printf "\n"
 
-exec "$PY3" "$APP_FILE"
+cd "$INSTALL_DIR" && exec "$PY3" "$APP_FILE"
