@@ -1,6 +1,6 @@
 """Native macOS app — menu bar, NSPopover, and WKWebView dashboard."""
 
-import os, sys, threading
+import os, sys, threading, time
 
 
 def run_native_app(port, mc, sm):
@@ -31,6 +31,34 @@ def run_native_app(port, mc, sm):
     # NSRightMouseDownMask = 1 << 3 = 8 (not 1 << 25)
     NSRightMouseDownMask = 1 << 3
 
+    class NavDelegate(NSObject):
+        """WKNavigationDelegate that auto-retries on load failure (server not ready)."""
+        _retry_count = 0
+        _max_retries = 10
+
+        def webView_didFailProvisionalNavigation_withError_(self, webView, navigation, error):
+            self._schedule_retry(webView)
+
+        def webView_didFailNavigation_withError_(self, webView, navigation, error):
+            self._schedule_retry(webView)
+
+        def _schedule_retry(self, webView):
+            if self._retry_count < self._max_retries:
+                self._retry_count += 1
+                delay = 0.5 * self._retry_count
+                def _reload():
+                    time.sleep(delay)
+                    try:
+                        webView.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            'reload', None, False
+                        )
+                    except Exception:
+                        pass
+                threading.Thread(target=_reload, daemon=True).start()
+
+        def webView_didFinishNavigation_(self, webView, navigation):
+            self._retry_count = 0
+
     class AppDelegate(NSObject):
         _window = None
         _webview = None
@@ -39,6 +67,8 @@ def run_native_app(port, mc, sm):
         _popover = None
         _popover_webview = None
         _event_monitor = None
+        _nav_delegate = None
+        _nav_delegate2 = None
 
         def applicationDidFinishLaunching_(self, notification):
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -62,6 +92,10 @@ def run_native_app(port, mc, sm):
             self._popover_webview = WebKit.WKWebView.alloc().initWithFrame_configuration_(
                 popover_rect, config
             )
+
+            # Add navigation delegate for auto-retry on load failure
+            self._nav_delegate = NavDelegate.alloc().init()
+            self._popover_webview.setNavigationDelegate_(self._nav_delegate)
 
             from AppKit import NSViewController
             vc = NSViewController.alloc().init()
@@ -133,8 +167,16 @@ def run_native_app(port, mc, sm):
             )
             NSRunLoop.currentRunLoop().addTimer_forMode_(self._timer, NSDefaultRunLoopMode)
 
-            # Auto-open dashboard
-            self.openDashboard_(None)
+            # Auto-open dashboard (with small delay for server readiness)
+            def _delayed_open():
+                time.sleep(0.5)
+                try:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        'openDashboard:', None, False
+                    )
+                except Exception:
+                    pass
+            threading.Thread(target=_delayed_open, daemon=True).start()
 
         def togglePopover_(self, sender):
             """Left-click: toggle the metrics popover."""
@@ -236,6 +278,10 @@ def run_native_app(port, mc, sm):
             self._webview = WebKit.WKWebView.alloc().initWithFrame_configuration_(
                 rect, config
             )
+            # Add navigation delegate for auto-retry on dashboard too
+            self._nav_delegate2 = NavDelegate.alloc().init()
+            self._webview.setNavigationDelegate_(self._nav_delegate2)
+
             req = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
             self._webview.loadRequest_(req)
             self._window.setContentView_(self._webview)
@@ -263,3 +309,4 @@ def run_native_app(port, mc, sm):
     _mod._delegate = delegate
 
     app.run()
+
