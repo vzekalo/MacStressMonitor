@@ -164,13 +164,35 @@ fi
 mkdir -p "$INSTALL_DIR"
 
 info "Downloading MacStress..."
+
+# Download entry-point wrapper
 curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress.py" -o "$APP_FILE"
+
+# Download macstress/ package (required since v1.5.0)
+PKG_DIR="$INSTALL_DIR/macstress"
+mkdir -p "$PKG_DIR"
+REPO_RAW="https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress"
+PKG_MODULES="__init__.py __main__.py benchmark.py dashboard.py launchd.py launcher.py metrics.py native_app.py popover.py server.py stress.py stress_manager.py sudo.py system.py updater.py"
+dl_ok=0; dl_fail=0
+for mod in $PKG_MODULES; do
+    if curl -fsSL "$REPO_RAW/$mod" -o "$PKG_DIR/$mod" 2>/dev/null; then
+        dl_ok=$((dl_ok + 1))
+    else
+        dl_fail=$((dl_fail + 1))
+        warn "Failed to download macstress/$mod"
+    fi
+done
+ok "Package modules: $dl_ok downloaded"
+[ "$dl_fail" -gt 0 ] && warn "$dl_fail modules failed — app may not start correctly"
+
+# Download Lite version
 curl -fsSL "https://raw.githubusercontent.com/vzekalo/MacStressMonitor/main/macstress_lite.sh" -o "$INSTALL_DIR/macstress_lite.sh" 2>/dev/null
 chmod +x "$INSTALL_DIR/macstress_lite.sh" 2>/dev/null
 
 # Create a launch script for easy re-launch
 cat > "$INSTALL_DIR/launch.sh" << LAUNCH
 #!/bin/bash
+cd "$INSTALL_DIR"
 exec "$PY3" "$APP_FILE"
 LAUNCH
 chmod +x "$INSTALL_DIR/launch.sh"

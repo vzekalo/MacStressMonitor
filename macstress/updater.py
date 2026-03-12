@@ -3,6 +3,14 @@
 import os, sys, re, json
 from . import VERSION, GITHUB_REPO
 
+# All package modules to download during self-update
+_PKG_MODULES = [
+    "__init__.py", "__main__.py", "benchmark.py", "dashboard.py",
+    "launchd.py", "launcher.py", "metrics.py", "native_app.py",
+    "popover.py", "server.py", "stress.py", "stress_manager.py",
+    "sudo.py", "system.py", "updater.py",
+]
+
 
 def _ver_tuple(v):
     """Parse version string to tuple: '1.3.0' -> (1, 3, 0)."""
@@ -38,7 +46,7 @@ def self_update(target_ver=None):
     """Download latest from GitHub and replace local files.
     Returns (success: bool, message: str)."""
     try:
-        import urllib.request
+        import urllib.request, ast
 
         if not target_ver:
             result = check_for_updates(silent=True)
@@ -47,33 +55,59 @@ def self_update(target_ver=None):
             else:
                 return False, "Немає доступних оновлень"
 
-        # Download from release tag (not main branch — CDN caches main for 3-5 min)
-        raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/v{target_ver}/macstress.py"
+        base_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/v{target_ver}"
+
+        # Download macstress.py wrapper
+        raw_url = f"{base_url}/macstress.py"
         req = urllib.request.Request(raw_url, headers={
             "User-Agent": "MacStress",
             "Cache-Control": "no-cache",
         })
         with urllib.request.urlopen(req, timeout=15) as r:
-            new_code = r.read()
+            new_wrapper = r.read()
+        ast.parse(new_wrapper)
 
-        import ast
-        ast.parse(new_code)
+        # Download all package modules
+        pkg_dir = os.path.dirname(os.path.abspath(__file__))
+        dl_ok = 0
+        for mod in _PKG_MODULES:
+            try:
+                mod_url = f"{base_url}/macstress/{mod}"
+                req = urllib.request.Request(mod_url, headers={
+                    "User-Agent": "MacStress",
+                    "Cache-Control": "no-cache",
+                })
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    mod_code = r.read()
+                ast.parse(mod_code)
+                tmp_path = os.path.join(pkg_dir, mod + ".tmp")
+                with open(tmp_path, "wb") as f:
+                    f.write(mod_code)
+                os.replace(tmp_path, os.path.join(pkg_dir, mod))
+                dl_ok += 1
+            except Exception:
+                pass  # Non-critical: module might not exist in new version
 
-        m = re.search(rb'VERSION\s*=\s*["\'](\d[\d.]+)["\']', new_code)
-        if not m:
-            return False, "Не вдалося визначити версію нового файлу"
-        new_ver = m.group(1).decode()
+        # Read new version from updated __init__.py
+        init_path = os.path.join(pkg_dir, "__init__.py")
+        with open(init_path, "r") as f:
+            init_code = f.read()
+        m = re.search(r'VERSION\s*=\s*["\']([\d.]+)["\']', init_code)
+        new_ver = m.group(1) if m else target_ver
+
         if _ver_tuple(new_ver) <= _ver_tuple(VERSION):
             return False, f"Завантажена версія ({new_ver}) не новіша за поточну ({VERSION})"
 
-        # Atomic replace
-        script_path = os.path.abspath(sys.modules['__main__'].__file__)
-        tmp_path = script_path + ".tmp"
-        with open(tmp_path, "wb") as f:
-            f.write(new_code)
-        os.replace(tmp_path, script_path)
+        # Update wrapper script
+        script_dir = os.path.dirname(pkg_dir)
+        wrapper_path = os.path.join(script_dir, "macstress.py")
+        if os.path.exists(wrapper_path):
+            tmp_path = wrapper_path + ".tmp"
+            with open(tmp_path, "wb") as f:
+                f.write(new_wrapper)
+            os.replace(tmp_path, wrapper_path)
 
-        print(f"  ✅ Оновлено: v{VERSION} → v{new_ver}")
+        print(f"  ✅ Оновлено: v{VERSION} → v{new_ver} ({dl_ok} модулів)")
         return True, new_ver
     except Exception as e:
         return False, str(e)
